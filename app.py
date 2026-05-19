@@ -1,1221 +1,611 @@
-# =========================================
-# APP.PY
-# HYBRID SCREENING + MARKET LAYER
-# SAFE STREAMLIT VERSION
-# =========================================
-
-# =========================================
-# IMPORT
-# =========================================
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
 from datetime import datetime
-from io import BytesIO
+import io
 
 warnings.filterwarnings("ignore")
 
 # =========================================
-# PAGE CONFIG
-# =========================================
-st.set_page_config(
-    page_title="Hybrid Screening",
-    layout="wide"
-)
-
-# =========================================
-# TITLE
-# =========================================
-st.title("📈 HYBRID SCREENING + MARKET LAYER")
-
-st.markdown("""
-Upload file Excel daftar saham
-
-Kolom wajib:
-- Kode
-""")
-
-# =========================================
-# UPLOAD FILE
-# =========================================
-uploaded_file = st.file_uploader(
-    "Upload File Excel",
-    type=["xlsx", "xls"]
-)
-
-# =========================================
-# DATE INPUT
-# =========================================
-pakai_hari_ini = st.checkbox(
-    "Pakai tanggal hari ini",
-    value=True
-)
-
-if pakai_hari_ini:
-
-    tanggal_input = pd.Timestamp.today()
-
-else:
-
-    tanggal_manual = st.date_input(
-        "Pilih tanggal screening"
-    )
-
-    tanggal_input = pd.to_datetime(
-        tanggal_manual
-    )
-
-# =========================================
-# BUTTON
-# =========================================
-run_button = st.button(
-    "🚀 Jalankan Screening"
-)
-
-# =========================================
 # FUNCTION MA STATE
 # =========================================
-def get_state(
-    close,
-    maA,
-    maB,
-    maC,
-    maD,
-    maE,
-    maF
-):
-
-    ma_list = [
-        maA,
-        maB,
-        maC,
-        maD,
-        maE,
-        maF
-    ]
-
+def get_state(close, maA, maB, maC, maD, maE, maF):
+    ma_list = [maA, maB, maC, maD, maE, maF]
     ma_max = max(ma_list)
     ma_min = min(ma_list)
+    spread = round((ma_max - ma_min) / close, 4)
 
-    spread = round(
-        (ma_max - ma_min)
-        / close,
-        4
-    )
+    bull = (maA > maB and maB > maC and maC > maD and maD > maE and maE > maF)
+    bear = (maA < maB and maB < maC and maC < maD and maD < maE and maE < maF)
 
-    bull = (
-        maA > maB and
-        maB > maC and
-        maC > maD and
-        maD > maE and
-        maE > maF
-    )
-
-    bear = (
-        maA < maB and
-        maB < maC and
-        maC < maD and
-        maD < maE and
-        maE < maF
-    )
-
-    if (
-        spread < 0.03 and
-        close > maD
-    ):
-
+    if spread < 0.03 and close > maD:
         return "MELILIT UP"
-
-    elif (
-        spread < 0.03 and
-        close <= maD
-    ):
-
+    elif spread < 0.03 and close <= maD:
         return "MELILIT DOWN"
-
-    elif (
-        bull and
-        spread <= 0.05
-    ):
-
+    elif bull and spread <= 0.05:
         return "RAPAT UP"
-
-    elif (
-        bear and
-        spread <= 0.05
-    ):
-
+    elif bear and spread <= 0.05:
         return "RAPAT DOWN"
-
     elif spread <= 0.07:
-
         return "RENGGANG"
-
     else:
-
         return "JAUH"
 
 # =========================================
 # FUNCTION ATR
 # =========================================
-def calculate_atr(
-    df,
-    period=14
-):
-
-    tr1 = (
-        df["High"] -
-        df["Low"]
-    )
-
-    tr2 = abs(
-        df["High"] -
-        df["Close"].shift(1)
-    )
-
-    tr3 = abs(
-        df["Low"] -
-        df["Close"].shift(1)
-    )
-
-    tr = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1
-    ).max(axis=1)
-
-    atr = (
-        tr
-        .rolling(period)
-        .mean()
-    )
-
+def calculate_atr(df, period=14):
+    tr1 = df["High"] - df["Low"]
+    tr2 = abs(df["High"] - df["Close"].shift(1))
+    tr3 = abs(df["Low"] - df["Close"].shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
     return atr
 
 # =========================================
 # FUNCTION REJECTION
 # =========================================
-def count_rejections(
-    recent_df,
-    ma_col,
-    tolerance
-):
-
+def count_rejections(recent_df, ma_col, tolerance):
     rejection_count = 0
-
     if recent_df.empty:
         return 0
 
     for i in range(len(recent_df)):
+        low = recent_df["Low"].iloc[i]
+        close = recent_df["Close"].iloc[i]
+        ma = recent_df[ma_col].iloc[i]
 
-        try:
-
-            low = recent_df["Low"].iloc[i]
-            close = recent_df["Close"].iloc[i]
-            ma = recent_df[ma_col].iloc[i]
-
-            if pd.isna(ma):
-                continue
-
-            rejection = (
-
-                (
-                    low >= (
-                        ma * (1 - tolerance)
-                    )
-                )
-
-                and
-
-                (
-                    low <= (
-                        ma * (1 + tolerance)
-                    )
-                )
-
-                and
-
-                (
-                    close > ma
-                )
-
-            )
-
-            if rejection:
-                rejection_count += 1
-
-        except:
+        if pd.isna(ma):
             continue
+
+        rejection = (
+            (low >= (ma * (1 - tolerance))) and
+            (low <= (ma * (1 + tolerance))) and
+            (close > ma)
+        )
+
+        if rejection:
+            rejection_count += 1
 
     return rejection_count
 
 # =========================================
-# MAIN
+# STREAMLIT UI
 # =========================================
-if uploaded_file and run_button:
-
-    try:
-
-        # =========================================
-        # READ EXCEL
-        # =========================================
-        excel_df = pd.read_excel(
-            uploaded_file
-        )
-
-        # =========================================
-        # VALIDASI KOLOM
-        # =========================================
-        if "Kode" not in excel_df.columns:
-
-            st.error(
-                "Kolom 'Kode' tidak ditemukan."
-            )
-
-            st.stop()
-
-        # =========================================
-        # LIST SAHAM
-        # =========================================
-        saham_list = (
-            excel_df["Kode"]
-            .astype(str)
-            .str.upper()
-            .str.strip()
-            .str.replace(".JK", "", regex=False)
-            + ".JK"
-        ).tolist()
-
-        saham_list = sorted(
-            list(set(saham_list))
-        )
-
-        saham_list = [
-            x for x in saham_list
-            if x != ".JK"
-        ]
-
-        st.info(
-            f"Jumlah saham: {len(saham_list)}"
-        )
-
-        # =========================================
-        # DOWNLOAD IHSG
-        # =========================================
-        st.write("Download IHSG...")
-
-        ihsg = yf.download(
-            "^JKSE",
-            period="1y",
-            auto_adjust=False,
-            progress=False
-        )
-
-        if ihsg.empty:
-
-            st.error(
-                "Gagal download IHSG"
-            )
-
-            st.stop()
-
-        if isinstance(
-            ihsg.columns,
-            pd.MultiIndex
-        ):
-
-            ihsg.columns = (
-                ihsg.columns
-                .get_level_values(0)
-            )
-
-        ihsg.columns = (
-            ihsg.columns
-            .str.title()
-        )
-
-        ihsg = ihsg[
-            ihsg.index <= tanggal_input
-        ].copy()
-
-        ihsg = ihsg.dropna(
-            subset=["Close"]
-        )
-
-        if len(ihsg) < 60:
-
-            st.error(
-                "Data IHSG kurang dari 60 hari"
-            )
-
-            st.stop()
-
-        ihsg_close = (
-            ihsg["Close"]
-            .dropna()
-        )
-
-        # =========================================
-        # MARKET DATA
-        # =========================================
-        st.write("Download market global...")
-
-        market_tickers = {
-            "EIDO": "EIDO",
-            "DXY": "DX-Y.NYB",
-            "USDIDR": "IDR=X",
-            "US10Y": "^TNX",
-            "SP500": "^GSPC"
-        }
-
-        market_results = []
-        market_score = 0
-
-        for nama, ticker in market_tickers.items():
-
-            try:
-
-                market_df = yf.download(
-                    ticker,
-                    period="1mo",
-                    auto_adjust=False,
-                    progress=False
-                )
-
-                if market_df.empty:
-                    continue
-
-                if isinstance(
-                    market_df.columns,
-                    pd.MultiIndex
-                ):
-
-                    market_df.columns = (
-                        market_df.columns
-                        .get_level_values(0)
-                    )
-
-                market_df.columns = (
-                    market_df.columns
-                    .str.title()
-                )
-
-                market_df = market_df.dropna(
-                    subset=["Close"]
-                )
-
-                if len(market_df) < 5:
-                    continue
-
-                close_now = float(
-                    market_df["Close"].iloc[-1]
-                )
-
-                close_prev = float(
-                    market_df["Close"].iloc[-2]
-                )
-
-                change_pct = round(
-                    (
-                        (
-                            close_now -
-                            close_prev
-                        )
-                        /
-                        close_prev
-                    ) * 100,
-                    2
-                )
-
-                status = "NEUTRAL"
-                score = 0
-
-                if nama == "EIDO":
-
-                    if change_pct > 0.5:
-
-                        status = "BULLISH"
-                        score = 3
-
-                    elif change_pct < -0.5:
-
-                        status = "BEARISH"
-                        score = -3
-
-                elif nama == "DXY":
-
-                    if change_pct > 0.3:
-
-                        status = "NEGATIVE"
-                        score = -1
-
-                    elif change_pct < -0.3:
-
-                        status = "POSITIVE"
-                        score = 1
-
-                elif nama == "USDIDR":
-
-                    if change_pct > 0.3:
-
-                        status = "NEGATIVE"
-                        score = -2
-
-                    elif change_pct < -0.3:
-
-                        status = "POSITIVE"
-                        score = 2
-
-                elif nama == "US10Y":
-
-                    if change_pct > 1:
-
-                        status = "RISK OFF"
-                        score = -3
-
-                    elif change_pct < -1:
-
-                        status = "RISK ON"
-                        score = 2
-
-                elif nama == "SP500":
-
-                    if change_pct > 0.5:
-
-                        status = "BULLISH"
-                        score = 3
-
-                    elif change_pct < -0.5:
-
-                        status = "BEARISH"
-                        score = -3
-
-                market_score += score
-
-                market_results.append({
-
-                    "Indicator": nama,
-                    "Change %": change_pct,
-                    "Status": status,
-                    "Score": score
-
-                })
-
-            except:
-                continue
-
-        # =========================================
-        # MARKET REGIME
-        # =========================================
-        if market_score >= 5:
-
-            market_regime = "✅ RISK ON"
-
-        elif market_score <= -5:
-
-            market_regime = "❌ RISK OFF"
-
-        else:
-
-            market_regime = "⚠️ NEUTRAL"
-
-        # =========================================
-        # DOWNLOAD DAILY
-        # =========================================
-        st.write("Download daily data...")
-
-        daily_data = yf.download(
-            tickers=saham_list,
-            period="1y",
-            group_by="ticker",
-            auto_adjust=False,
-            progress=True,
-            threads=True
-        )
-
-        # =========================================
-        # DOWNLOAD WEEKLY
-        # =========================================
-        st.write("Download weekly data...")
-
-        weekly_data = yf.download(
-            tickers=saham_list,
-            period="3y",
-            interval="1wk",
-            group_by="ticker",
-            auto_adjust=False,
-            progress=True,
-            threads=True
-        )
-
-        # =========================================
-        # MULTI CHECK
-        # =========================================
-        is_multi = len(saham_list) > 1
-
-        # =========================================
-        # LIQUIDITY
-        # =========================================
-        MIN_LIQUIDITY = 1_500_000_000
-
-        # =========================================
-        # HASIL
-        # =========================================
-        hasil = []
-
-        progress_bar = st.progress(0)
-
-        # =========================================
-        # LOOP
-        # =========================================
-        for idx, kode in enumerate(saham_list):
-
-            try:
-
-                progress_bar.progress(
-                    (idx + 1) / len(saham_list)
-                )
-
-                # =========================================
-                # EXTRACT
-                # =========================================
-                if is_multi:
-
-                    try:
-
-                        data = (
-                            daily_data[kode]
-                            .copy()
-                        )
-
-                        weekly = (
-                            weekly_data[kode]
-                            .copy()
-                        )
-
-                    except:
+st.set_page_config(page_title="Hybrid Screening & Market Layer", layout="wide")
+st.title("📈 Hybrid Screening + Market Layer")
+
+# =========================================
+# UPLOAD FILE EXCEL
+# =========================================
+uploaded_file = st.file_uploader("Upload file Excel daftar saham...", type=["xlsx", "xls"])
+
+# =========================================
+# INPUT MODE TANGGAL
+# =========================================
+pakai_hari_ini = st.radio("Pakai tanggal hari ini?", ("Ya", "Tidak"))
+
+if pakai_hari_ini == "Ya":
+    tanggal_input = pd.Timestamp.today()
+else:
+    tanggal_manual = st.date_input("Masukkan tanggal screening")
+    tanggal_input = pd.to_datetime(tanggal_manual)
+
+st.write(f"**Screening menggunakan data sampai:** {tanggal_input.date()}")
+
+# =========================================
+# MAIN EXECUTION
+# =========================================
+if uploaded_file is not None:
+    if st.button("Mulai Screening"):
+        with st.spinner("Membaca data dan melakukan screening..."):
+            
+            excel_df = pd.read_excel(uploaded_file)
+            
+            saham_list = (
+                excel_df["Kode"]
+                .astype(str)
+                .str.upper()
+                .str.strip()
+                .str.replace(".JK", "", regex=False)
+                + ".JK"
+            ).tolist()
+
+            saham_list = sorted(list(set(saham_list)))
+            st.info(f"Jumlah saham: {len(saham_list)}")
+
+            # =========================================
+            # DOWNLOAD IHSG
+            # =========================================
+            st.write("Download IHSG...")
+            ihsg = yf.download("^JKSE", period="1y", auto_adjust=False, progress=False)
+
+            if isinstance(ihsg.columns, pd.MultiIndex):
+                ihsg.columns = ihsg.columns.get_level_values(0)
+            
+            ihsg.columns = ihsg.columns.str.title()
+            
+            for col in ihsg.columns:
+                ihsg[col] = pd.to_numeric(ihsg[col], errors="coerce")
+
+            ihsg = ihsg[ihsg.index <= tanggal_input].copy()
+            ihsg_close = ihsg["Close"].dropna()
+
+            # =========================================
+            # DOWNLOAD MARKET DATA
+            # =========================================
+            st.write("Download market global...")
+            market_tickers = {
+                "EIDO": "EIDO",
+                "DXY": "DX-Y.NYB",
+                "USDIDR": "IDR=X",
+                "US10Y": "^TNX",
+                "SP500": "^GSPC"
+            }
+
+            market_results = []
+            market_score = 0
+
+            for nama, ticker in market_tickers.items():
+                try:
+                    market_df_raw = yf.download(ticker, period="1mo", auto_adjust=False, progress=False)
+                    if market_df_raw.empty or len(market_df_raw) < 5:
                         continue
 
-                else:
+                    if isinstance(market_df_raw.columns, pd.MultiIndex):
+                        market_df_raw.columns = market_df_raw.columns.get_level_values(0)
+                    market_df_raw.columns = market_df_raw.columns.str.title()
+                    market_df_raw = market_df_raw.dropna(subset=["Close"])
 
-                    data = daily_data.copy()
-                    weekly = weekly_data.copy()
+                    if market_df_raw.empty or len(market_df_raw) < 5:
+                        continue
 
-                # =========================================
-                # EMPTY CHECK
-                # =========================================
-                if data.empty:
-                    continue
+                    close_now = float(market_df_raw["Close"].iloc[-1])
+                    close_prev = float(market_df_raw["Close"].iloc[-2])
+                    change_pct = round(((close_now - close_prev) / close_prev) * 100, 2)
 
-                if weekly.empty:
-                    continue
+                    status = "NEUTRAL"
+                    score = 0
 
-                # =========================================
-                # FIX COLUMN
-                # =========================================
-                data.columns = (
-                    data.columns
-                    .str.title()
-                )
+                    if nama == "EIDO":
+                        if change_pct > 0.5:
+                            status, score = "BULLISH", 3
+                        elif change_pct < -0.5:
+                            status, score = "BEARISH", -3
+                    elif nama == "DXY":
+                        if change_pct > 0.3:
+                            status, score = "NEGATIVE", -1
+                        elif change_pct < -0.3:
+                            status, score = "POSITIVE", 1
+                    elif nama == "USDIDR":
+                        if change_pct > 0.3:
+                            status, score = "NEGATIVE", -2
+                        elif change_pct < -0.3:
+                            status, score = "POSITIVE", 2
+                    elif nama == "US10Y":
+                        if change_pct > 1:
+                            status, score = "RISK OFF", -3
+                        elif change_pct < -1:
+                            status, score = "RISK ON", 2
+                    elif nama == "SP500":
+                        if change_pct > 0.5:
+                            status, score = "BULLISH", 3
+                        elif change_pct < -0.5:
+                            status, score = "BEARISH", -3
 
-                weekly.columns = (
-                    weekly.columns
-                    .str.title()
-                )
+                    market_score += score
+                    market_results.append({
+                        "Indicator": nama,
+                        "Change %": change_pct,
+                        "Status": status,
+                        "Score": score
+                    })
 
-                # =========================================
-                # SORT
-                # =========================================
-                data = data.sort_index()
-                weekly = weekly.sort_index()
+                except Exception as e:
+                    st.write(f"ERROR MARKET {nama}: {e}")
 
-                # =========================================
-                # FILTER DATE
-                # =========================================
-                data = data[
-                    data.index <= tanggal_input
-                ].copy()
+            if market_score >= 5:
+                market_regime = "✅ RISK ON"
+            elif market_score <= -5:
+                market_regime = "❌ RISK OFF"
+            else:
+                market_regime = "⚠️ NEUTRAL"
 
-                weekly = weekly[
-                    weekly.index <= tanggal_input
-                ].copy()
+            # =========================================
+            # DOWNLOAD DAILY & WEEKLY
+            # =========================================
+            st.write("Download data harian dan mingguan...")
+            daily_data = yf.download(tickers=saham_list, period="1y", group_by="ticker", auto_adjust=False, progress=False, threads=True)
+            weekly_data = yf.download(tickers=saham_list, period="3y", interval="1wk", group_by="ticker", auto_adjust=False, progress=False, threads=True)
 
-                # =========================================
-                # CLEAN
-                # =========================================
-                data = (
-                    data
-                    .dropna(how="all")
-                    .dropna(subset=["Close"])
-                )
+            is_multi = len(saham_list) > 1
+            MIN_LIQUIDITY = 1_500_000_000
+            hasil = []
 
-                weekly = (
-                    weekly
-                    .dropna(how="all")
-                    .dropna(subset=["Close"])
-                )
+            st.write("Memproses Screener...")
 
-                # =========================================
-                # VALIDASI
-                # =========================================
-                if len(data) < 220:
-                    continue
-
-                if len(weekly) < 25:
-                    continue
-
-                if len(data["Close"].dropna()) < 220:
-                    continue
-
-                if len(weekly["Close"].dropna()) < 25:
-                    continue
-
-                if len(data["Volume"].dropna()) < 20:
-                    continue
-
-                # =========================================
-                # CLOSE SERIES
-                # =========================================
-                close_series = (
-                    data["Close"]
-                    .dropna()
-                )
-
-                if len(close_series) < 220:
-                    continue
-
-                # =========================================
-                # MA
-                # =========================================
-                data["MA3"] = close_series.rolling(3).mean()
-                data["MA5"] = close_series.rolling(5).mean()
-                data["MA10"] = close_series.rolling(10).mean()
-                data["MA20"] = close_series.rolling(20).mean()
-                data["MA50"] = close_series.rolling(50).mean()
-                data["MA100"] = close_series.rolling(100).mean()
-                data["MA200"] = close_series.rolling(200).mean()
-
-                # =========================================
-                # RSI
-                # =========================================
-                delta = close_series.diff()
-
-                gain = delta.where(
-                    delta > 0,
-                    0
-                )
-
-                loss = -delta.where(
-                    delta < 0,
-                    0
-                )
-
-                avg_gain = gain.ewm(
-                    alpha=1/14,
-                    min_periods=14,
-                    adjust=False
-                ).mean()
-
-                avg_loss = loss.ewm(
-                    alpha=1/14,
-                    min_periods=14,
-                    adjust=False
-                ).mean()
-
-                rs = avg_gain / avg_loss
-
-                data["RSI"] = (
-                    100 -
-                    (
-                        100 /
-                        (1 + rs)
-                    )
-                )
-
-                # =========================================
-                # ATR
-                # =========================================
-                data["ATR"] = calculate_atr(data)
-
-                data["ATR_PERCENT"] = (
-                    data["ATR"]
-                    /
-                    data["Close"]
-                ) * 100
-
-                # =========================================
-                # VOLUME
-                # =========================================
-                valid_volume = data[
-                    data["Volume"] > 0
-                ].copy()
-
-                if len(valid_volume) < 20:
-                    continue
-
-                volume_now = float(
-                    valid_volume["Volume"].iloc[-1]
-                )
-
-                volume_avg = float(
-                    valid_volume["Volume"]
-                    .tail(20)
-                    .mean()
-                )
-
-                if (
-                    pd.isna(volume_avg)
-                    or
-                    volume_avg <= 0
-                ):
-
-                    volume_ratio = 0
-
-                else:
-
-                    volume_ratio = round(
-                        volume_now /
-                        volume_avg,
-                        2
-                    )
-
-                # =========================================
-                # VALUE
-                # =========================================
-                data["VALUE"] = (
-                    data["Close"] *
-                    data["Volume"]
-                )
-
-                data["AVG_VALUE20"] = (
-                    data["VALUE"]
-                    .rolling(20)
-                    .mean()
-                )
-
-                avg_value20_series = (
-                    data["AVG_VALUE20"]
-                    .dropna()
-                )
-
-                if avg_value20_series.empty:
-                    continue
-
-                avg_value20 = float(
-                    avg_value20_series.iloc[-1]
-                )
-
-                if avg_value20 < MIN_LIQUIDITY:
-                    continue
-
-                # =========================================
-                # WEEKLY
-                # =========================================
-                weekly["MA20W"] = (
-                    weekly["Close"]
-                    .rolling(20)
-                    .mean()
-                )
-
-                weekly_close_series = (
-                    weekly["Close"]
-                    .dropna()
-                )
-
-                weekly_ma20_series = (
-                    weekly["MA20W"]
-                    .dropna()
-                )
-
-                if (
-                    weekly_close_series.empty
-                    or
-                    weekly_ma20_series.empty
-                ):
-                    continue
-
-                weekly_close = float(
-                    weekly_close_series.iloc[-1]
-                )
-
-                weekly_ma20 = float(
-                    weekly_ma20_series.iloc[-1]
-                )
-
-                weekly_up = (
-                    weekly_close >
-                    weekly_ma20
-                )
-
-                # =========================================
-                # SAFE LAST VALUE
-                # =========================================
+            # =========================================
+            # LOOP SAHAM
+            # =========================================
+            for kode in saham_list:
                 try:
+                    if is_multi:
+                        try:
+                            data = daily_data[kode].copy()
+                            weekly = weekly_data[kode].copy()
+                        except:
+                            continue
+                    else:
+                        data = daily_data.copy()
+                        weekly = weekly_data.copy()
 
-                    close = float(
-                        close_series.iloc[-1]
-                    )
+                    if data.empty or len(data) < 50: continue
+                    if weekly.empty or len(weekly) < 20: continue
 
-                    ma3 = float(
-                        data["MA3"].dropna().iloc[-1]
-                    )
+                    data.columns = data.columns.str.title()
+                    weekly.columns = weekly.columns.str.title()
 
-                    ma5 = float(
-                        data["MA5"].dropna().iloc[-1]
-                    )
+                    data = data.sort_index()
+                    weekly = weekly.sort_index()
 
-                    ma10 = float(
-                        data["MA10"].dropna().iloc[-1]
-                    )
+                    data = data[data.index <= tanggal_input].copy()
+                    weekly = weekly[weekly.index <= tanggal_input].copy()
 
-                    ma20 = float(
-                        data["MA20"].dropna().iloc[-1]
-                    )
+                    data = data.dropna(how="all").dropna(subset=["Close"])
+                    weekly = weekly.dropna(how="all").dropna(subset=["Close"])
 
-                    ma50 = float(
-                        data["MA50"].dropna().iloc[-1]
-                    )
+                    if data.empty or len(data) < 220: continue
+                    if weekly.empty or len(weekly) < 25: continue
+                    if data["Close"].dropna().shape[0] < 220: continue
+                    if weekly["Close"].dropna().shape[0] < 25: continue
+                    if data["Volume"].dropna().shape[0] < 20: continue
 
-                    ma100 = float(
-                        data["MA100"].dropna().iloc[-1]
-                    )
+                    close_series = data["Close"]
 
-                    ma200 = float(
-                        data["MA200"].dropna().iloc[-1]
-                    )
+                    data["MA3"] = close_series.rolling(3).mean()
+                    data["MA5"] = close_series.rolling(5).mean()
+                    data["MA10"] = close_series.rolling(10).mean()
+                    data["MA20"] = close_series.rolling(20).mean()
+                    data["MA50"] = close_series.rolling(50).mean()
+                    data["MA100"] = close_series.rolling(100).mean()
+                    data["MA200"] = close_series.rolling(200).mean()
 
-                    rsi = round(
-                        float(
-                            data["RSI"]
-                            .dropna()
-                            .iloc[-1]
-                        ),
-                        2
-                    )
+                    delta = close_series.diff()
+                    gain = delta.where(delta > 0, 0)
+                    loss = -delta.where(delta < 0, 0)
+                    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                    rs = avg_gain / avg_loss
+                    data["RSI"] = 100 - (100 / (1 + rs))
 
-                    atr = float(
-                        data["ATR"]
-                        .dropna()
-                        .iloc[-1]
-                    )
+                    ema8 = close_series.ewm(span=8, adjust=False).mean()
+                    ema21 = close_series.ewm(span=21, adjust=False).mean()
+                    data["MACD"] = ema8 - ema21
+                    data["MACD_SIGNAL"] = data["MACD"].ewm(span=5, adjust=False).mean()
 
-                    atr_percent = round(
-                        float(
-                            data["ATR_PERCENT"]
-                            .dropna()
-                            .iloc[-1]
-                        ),
-                        2
-                    )
+                    rsi_min = data["RSI"].rolling(5).min()
+                    rsi_max = data["RSI"].rolling(5).max()
+                    data["STOCH_RSI"] = ((data["RSI"] - rsi_min) / (rsi_max - rsi_min)) * 100
+                    data["K"] = data["STOCH_RSI"].rolling(3).mean()
+                    data["D"] = data["K"].rolling(3).mean()
 
-                except:
-                    continue
+                    data["ATR"] = calculate_atr(data)
+                    data["ATR_PERCENT"] = (data["ATR"] / data["Close"]) * 100
 
-                # =========================================
-                # REJECTION
-                # =========================================
-                recent_4 = data.tail(4).copy()
+                    valid_volume = data[data["Volume"] > 0].copy()
+                    if valid_volume.empty or len(valid_volume) < 20: continue
+                    if len(valid_volume["Volume"].dropna()) < 20: continue
 
-                ma20_reject = count_rejections(
-                    recent_4,
-                    "MA20",
-                    0.005
-                )
+                    volume_now = float(valid_volume["Volume"].iloc[-1])
+                    volume_avg = float(valid_volume["Volume"].tail(20).mean())
 
-                ma50_reject = count_rejections(
-                    recent_4,
-                    "MA50",
-                    0.01
-                )
+                    if pd.isna(volume_avg) or volume_avg <= 0:
+                        volume_ratio = 0
+                    else:
+                        volume_ratio = round(volume_now / volume_avg, 2)
 
-                ma200_reject = count_rejections(
-                    recent_4,
-                    "MA200",
-                    0.015
-                )
+                    data["VALUE"] = data["Close"] * data["Volume"]
+                    data["AVG_VALUE20"] = data["VALUE"].rolling(20).mean()
+                    avg_value20_series = data["AVG_VALUE20"].dropna()
 
-                rejection_text = []
+                    if avg_value20_series.empty: continue
+                    avg_value20 = float(avg_value20_series.iloc[-1])
 
-                if ma20_reject >= 1:
-                    rejection_text.append("MA20")
+                    if avg_value20 < MIN_LIQUIDITY: continue
 
-                if ma50_reject >= 1:
-                    rejection_text.append("MA50")
+                    weekly["MA20W"] = weekly["Close"].rolling(20).mean()
+                    weekly_close_series = weekly["Close"].dropna()
+                    weekly_ma20_series = weekly["MA20W"].dropna()
 
-                if ma200_reject >= 1:
-                    rejection_text.append("MA200")
+                    if weekly_close_series.empty or weekly_ma20_series.empty: continue
 
-                if len(rejection_text) == 0:
+                    weekly_close = float(weekly_close_series.iloc[-1])
+                    weekly_ma20 = float(weekly_ma20_series.iloc[-1])
+                    weekly_up = (weekly_close > weekly_ma20)
 
-                    ma_rejection_status = "None"
+                    if len(close_series) < 60: continue
 
-                else:
+                    close = float(close_series.iloc[-1])
+                    ma3 = float(data["MA3"].iloc[-1])
+                    ma5 = float(data["MA5"].iloc[-1])
+                    ma10 = float(data["MA10"].iloc[-1])
+                    ma20 = float(data["MA20"].iloc[-1])
+                    ma50 = float(data["MA50"].iloc[-1])
+                    ma100 = float(data["MA100"].iloc[-1])
+                    ma200 = float(data["MA200"].iloc[-1])
 
-                    ma_rejection_status = ",".join(
-                        rejection_text
-                    )
+                    rsi_val = round(float(data["RSI"].iloc[-1]), 2)
+                    atr = float(data["ATR"].iloc[-1])
+                    atr_percent = round(float(data["ATR_PERCENT"].iloc[-1]), 2)
 
-                # =========================================
-                # STATE
-                # =========================================
-                S_state = get_state(
-                    close,
-                    ma3,
-                    ma5,
-                    ma10,
-                    ma20,
-                    ma20,
-                    ma20
-                )
+                    critical_values = [close, ma20, ma50, ma100, ma200, rsi_val, atr]
+                    if any(pd.isna(x) for x in critical_values): continue
 
-                # =========================================
-                # SPREAD
-                # =========================================
-                ma_valid = [
-                    ma3,
-                    ma5,
-                    ma10,
-                    ma20,
-                    ma50,
-                    ma100
+                    if len(data) < 3: continue
+
+                    macd_now = data["MACD"].iloc[-1]
+                    macd_signal_now = data["MACD_SIGNAL"].iloc[-1]
+                    macd_prev = data["MACD"].iloc[-2]
+                    macd_signal_prev = data["MACD_SIGNAL"].iloc[-2]
+
+                    macd_bull = macd_now > macd_signal_now
+                    macd_fresh_bull = (macd_prev <= macd_signal_prev and macd_now > macd_signal_now)
+                    macd_bear = macd_now < macd_signal_now
+                    macd_fresh_bear = (macd_prev >= macd_signal_prev and macd_now < macd_signal_now)
+
+                    k_now = data["K"].iloc[-1]
+                    d_now = data["D"].iloc[-1]
+                    k_prev = data["K"].iloc[-2]
+                    d_prev = data["D"].iloc[-2]
+
+                    stoch_bull = k_now > d_now
+                    stoch_fresh_bull = (k_prev <= d_prev and k_now > d_now)
+                    stoch_bear = k_now < d_now
+                    stoch_fresh_bear = (k_prev >= d_prev and k_now < d_now)
+
+                    recent_4 = data.tail(4).copy()
+                    ma20_reject = count_rejections(recent_4, "MA20", 0.005)
+                    ma50_reject = count_rejections(recent_4, "MA50", 0.01)
+                    ma200_reject = count_rejections(recent_4, "MA200", 0.015)
+
+                    rejection_score = 0
+                    rejection_text = []
+
+                    if ma20_reject >= 2:
+                        rejection_score += 2
+                        rejection_text.append(f"MA20 ({ma20_reject}x)")
+                    elif ma20_reject == 1:
+                        rejection_score += 1
+                        rejection_text.append("MA20")
+                    if close < ma20: rejection_score -= 1
+
+                    if ma50_reject >= 2:
+                        rejection_score += 3
+                        rejection_text.append(f"MA50 ({ma50_reject}x)")
+                    elif ma50_reject == 1:
+                        rejection_score += 2
+                        rejection_text.append("MA50")
+                    if close < ma50: rejection_score -= 2
+
+                    if ma50_reject >= 1 and weekly_up:
+                        rejection_score += 1
+
+                    if ma200_reject >= 2:
+                        rejection_score += 4
+                        rejection_text.append(f"MA200 ({ma200_reject}x)")
+                    elif ma200_reject == 1:
+                        rejection_score += 2
+                        rejection_text.append("MA200")
+                    if close < ma200: rejection_score -= 4
+
+                    volume_confirmation = False
+                    if volume_ratio >= 1.2 and (ma20_reject >= 1 or ma50_reject >= 1 or ma200_reject >= 1):
+                        rejection_score += 1
+                        volume_confirmation = True
+
+                    if len(rejection_text) == 0:
+                        ma_rejection_status = "None"
+                    else:
+                        ma_rejection_status = ",".join(rejection_text)
+
+                    S_state = get_state(close, ma3, ma5, ma10, ma20, ma20, ma20)
+                    M_state = get_state(close, ma3, ma5, ma10, ma20, ma50, ma50)
+                    L_state = get_state(close, ma3, ma5, ma10, ma20, ma50, ma100)
+
+                    ma_valid = [ma3, ma5, ma10, ma20, ma50, ma100]
+                    spread_percent = round((max(ma_valid) - min(ma_valid)) / close * 100, 2)
+
+                    stock_return = (close_series.iloc[-1] / close_series.iloc[-60]) - 1
+                    ihsg_return = (ihsg_close.iloc[-1] / ihsg_close.iloc[-60]) - 1
+                    rs_score = round(stock_return - ihsg_return, 2)
+
+                    semua_dinamis_di_atas = (ma3 > ma5 and ma5 > ma10 and ma10 > ma20)
+                    trend_up = ma20 > ma50
+                    jarak_ke_ma50 = ((close - ma50) / ma50) * 100
+
+                    market_phase = "SIDEWAYS"
+                    action_plan = "WAIT"
+                    entry_price = "-"
+                    cutloss_price = "-"
+
+                    if volume_ratio >= 1.5 and rs_score > 0.10 and close > ma5 and spread_percent > 4.5:
+                        market_phase = "4. STRONG UPTREND"
+                        action_plan = "FOLLOW MOMENTUM"
+                        entry_price = f"{int(ma3)}"
+                        cutloss_price = int(close - (atr * 1.5))
+                    elif spread_percent < 3 and close > ma20:
+                        market_phase = "1. MBULET"
+                        action_plan = "BREAKOUT BASE"
+                        highest_ma = max([ma3, ma5, ma10, ma20])
+                        entry_price = f"> {int(highest_ma)}"
+                        cutloss_price = int(ma20 - (atr * 0.5))
+                    elif semua_dinamis_di_atas and 3 <= spread_percent <= 4.5:
+                        market_phase = "2. DINAMIS RAPAT"
+                        action_plan = "BUY PULLBACK"
+                        entry_price = f"{int(ma10)} - {int(ma5)}"
+                        cutloss_price = int(ma20 - atr)
+                    elif semua_dinamis_di_atas and 4.5 < spread_percent <= 7 and 0 < jarak_ke_ma50 <= 10 and trend_up:
+                        market_phase = "3. DINAMIS RENGGANG"
+                        action_plan = "BUY CONTINUATION"
+                        entry_price = f"{int(ma5)}"
+                        cutloss_price = int(ma10 - atr)
+                    elif close < ma20:
+                        market_phase = "WEAK"
+
+                    score = 0
+                    ma_state_score = {"MELILIT UP": 4, "RAPAT UP": 3, "RENGGANG": 1, "JAUH": 0, "MELILIT DOWN": -3, "RAPAT DOWN": -5}
+                    score += (ma_state_score.get(S_state, 0) + ma_state_score.get(M_state, 0) + ma_state_score.get(L_state, 0))
+                    score += rejection_score
+
+                    if spread_percent < 2: score += 2; spread_status = "SUPER RAPAT"
+                    elif spread_percent < 3: score += 1; spread_status = "RAPAT"
+                    elif spread_percent < 5: spread_status = "SEHAT"
+                    elif spread_percent > 12: score -= 2; spread_status = "OVEREXTENDED"
+                    elif spread_percent > 8: score -= 1; spread_status = "JAUH"
+                    else: spread_status = "NORMAL"
+
+                    if close > ma20: score += 2
+                    else: score -= 2
+
+                    if weekly_up: score += 2; weekly_status = "UPTREND"
+                    else: score -= 2; weekly_status = "DOWNTREND"
+
+                    if rsi_val > 80: score -= 3; rsi_status = "OVERHEAT"
+                    elif rsi_val > 70: score -= 1; rsi_status = "HOT"
+                    elif 45 <= rsi_val <= 65: score += 1; rsi_status = "HEALTHY"
+                    elif rsi_val < 35: score -= 1; rsi_status = "WEAK"
+                    else: rsi_status = "NORMAL"
+
+                    if 2 <= atr_percent <= 6: score += 2; atr_status = "HEALTHY"
+                    elif 6 < atr_percent <= 10: score += 1; atr_status = "VOLATILE"
+                    elif atr_percent > 15: score -= 2; atr_status = "EXTREME"
+                    else: atr_status = "NORMAL"
+
+                    if rs_score > 0.15: score += 6; rs_status = "LEADER"
+                    elif rs_score > 0.05: score += 3; rs_status = "OUTPERFORM"
+                    elif rs_score < -0.05: score -= 4; rs_status = "UNDERPERFORM"
+                    else: rs_status = "NORMAL"
+
+                    if volume_ratio >= 2: score += 5; volume_status = "SUPER"
+                    elif volume_ratio >= 1.5: score += 3; volume_status = "BREAKOUT"
+                    elif volume_ratio >= 1.2: score += 1; volume_status = "ACCUMULATION"
+                    else: volume_status = "NORMAL"
+
+                    if macd_fresh_bull: score += 5; macd_status = "FRESH BULL"
+                    elif macd_bull: score += 3; macd_status = "BULLISH"
+                    elif macd_fresh_bear: score -= 5; macd_status = "FRESH BEAR"
+                    elif macd_bear: score -= 3; macd_status = "BEARISH"
+                    else: macd_status = "NEUTRAL"
+
+                    if stoch_fresh_bull: score += 2; stoch_status = "FRESH BULL"
+                    elif stoch_bull: score += 1; stoch_status = "BULLISH"
+                    elif stoch_fresh_bear: score -= 2; stoch_status = "FRESH BEAR"
+                    elif stoch_bear: score -= 1; stoch_status = "BEARISH"
+                    else: stoch_status = "NEUTRAL"
+
+                    if rsi_val > 78 and spread_percent > 8 and volume_ratio > 2:
+                        score -= 5
+
+                    phase_score = {"4. STRONG UPTREND": 10, "3. DINAMIS RENGGANG": 8, "2. DINAMIS RAPAT": 7, "1. MBULET": 5, "SIDEWAYS": 0, "WEAK": -6}
+                    score += phase_score.get(market_phase, 0)
+
+                    market_bonus = 0
+                    if market_regime == "✅ RISK ON":
+                        if market_phase == "4. STRONG UPTREND": market_bonus = 5
+                        elif market_phase == "3. DINAMIS RENGGANG": market_bonus = 3
+                        elif market_phase == "2. DINAMIS RAPAT": market_bonus = 2
+                        elif market_phase == "1. MBULET": market_bonus = 1
+                        elif market_phase == "WEAK": market_bonus = -2
+                    elif market_regime == "❌ RISK OFF":
+                        if market_phase == "4. STRONG UPTREND": market_bonus = -1
+                        elif market_phase == "3. DINAMIS RENGGANG": market_bonus = -3
+                        elif market_phase == "2. DINAMIS RAPAT": market_bonus = -4
+                        elif market_phase == "1. MBULET": market_bonus = -2
+                        elif market_phase == "WEAK": market_bonus = -5
+
+                    final_score = score + market_bonus
+
+                    if final_score >= 40: quality = "🔥 SUPER STRONG"
+                    elif final_score >= 30: quality = "🚀 STRONG"
+                    elif final_score >= 18: quality = "✅ GOOD"
+                    elif final_score >= 8: quality = "👀 WATCHLIST"
+                    else: quality = "❌ AVOID"
+
+                    hasil.append({
+                        "Saham": kode.replace(".JK", ""),
+                        "Phase": market_phase,
+                        "Score": score,
+                        "Market Bonus": market_bonus,
+                        "Final Score": final_score,
+                        "Market Regime": market_regime,
+                        "Quality": quality,
+                        "Strategi": action_plan,
+                        "Antre Beli": entry_price,
+                        "Cut Loss": cutloss_price,
+                        "Close": int(close),
+                        "S.STATE": S_state,
+                        "M.STATE": M_state,
+                        "L.STATE": L_state,
+                        "MA_Rejection_Status": ma_rejection_status,
+                        "Spread %": spread_percent,
+                        "Spread": spread_status,
+                        "RSI": rsi_val,
+                        "RSI Status": rsi_status,
+                        "ATR %": atr_percent,
+                        "ATR Status": atr_status,
+                        "RS": rs_score,
+                        "RS Status": rs_status,
+                        "Volume Ratio": volume_ratio,
+                        "Volume": volume_status,
+                        "MACD": macd_status,
+                        "STOCH RSI": stoch_status,
+                        "Weekly": weekly_status,
+                        "Liquidity(B)": round(avg_value20 / 1_000_000_000, 2)
+                    })
+
+                except Exception as e:
+                    st.write(f"ERROR {kode}: {e}")
+
+            df = pd.DataFrame(hasil)
+            market_df_final = pd.DataFrame(market_results)
+
+            if not df.empty:
+                kolom_urut = [
+                    "Saham", "Phase", "Score", "Market Bonus", "Final Score", "Market Regime", "Quality",
+                    "Strategi", "Antre Beli", "Cut Loss", "Close", "S.STATE", "M.STATE", "L.STATE",
+                    "MA_Rejection_Status", "Spread %", "Spread", "RSI", "RSI Status", "ATR %", "ATR Status",
+                    "RS", "RS Status", "Volume Ratio", "Volume", "MACD", "STOCH RSI", "Weekly", "Liquidity(B)"
                 ]
+                df = df[kolom_urut]
+                df = df.sort_values(by="Final Score", ascending=False).reset_index(drop=True)
 
-                spread_percent = round(
-                    (
-                        max(ma_valid)
-                        -
-                        min(ma_valid)
-                    )
-                    /
-                    close
-                    * 100,
-                    2
+                # Output to IO Bytes
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    summary_df = pd.DataFrame([{
+                        "Timestamp": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                        "Market Score": market_score,
+                        "Market Regime": market_regime
+                    }])
+                    summary_df.to_excel(writer, sheet_name="Market", index=False, startrow=0)
+                    market_df_final.to_excel(writer, sheet_name="Market", index=False, startrow=4)
+                    df.to_excel(writer, sheet_name="Screener", index=False)
+                
+                output.seek(0)
+                
+                st.success("✅ Screening Selesai!")
+                
+                # Menampilkan preview tabel di aplikasi
+                st.dataframe(df.head(15))
+                
+                # Tombol Download
+                st.download_button(
+                    label="📥 Download Excel Hasil Screening",
+                    data=output,
+                    file_name=f"HYBRID_SCREENING_MARKET_{tanggal_input.date()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-
-                # =========================================
-                # RS SAFE
-                # =========================================
-                if len(close_series) < 60:
-                    continue
-
-                if len(ihsg_close) < 60:
-                    continue
-
-                stock_return = (
-
-                    close_series.iloc[-1]
-                    /
-                    close_series.iloc[-60]
-
-                ) - 1
-
-                ihsg_return = (
-
-                    ihsg_close.iloc[-1]
-                    /
-                    ihsg_close.iloc[-60]
-
-                ) - 1
-
-                rs_score = round(
-                    stock_return -
-                    ihsg_return,
-                    2
-                )
-
-                # =========================================
-                # SCORE
-                # =========================================
-                final_score = round(
-
-                    (
-                        rs_score * 20
-                    )
-
-                    +
-
-                    (
-                        volume_ratio * 5
-                    )
-
-                    +
-
-                    (
-                        10 - spread_percent
-                    ),
-
-                    2
-
-                )
-
-                # =========================================
-                # QUALITY
-                # =========================================
-                if final_score >= 40:
-
-                    quality = "🔥 SUPER STRONG"
-
-                elif final_score >= 30:
-
-                    quality = "🚀 STRONG"
-
-                elif final_score >= 18:
-
-                    quality = "✅ GOOD"
-
-                elif final_score >= 8:
-
-                    quality = "👀 WATCHLIST"
-
-                else:
-
-                    quality = "❌ AVOID"
-
-                # =========================================
-                # SAVE
-                # =========================================
-                hasil.append({
-
-                    "Saham": kode.replace(".JK", ""),
-
-                    "Final Score": final_score,
-
-                    "Market Regime": market_regime,
-
-                    "Quality": quality,
-
-                    "Close": int(close),
-
-                    "S.STATE": S_state,
-
-                    "MA_Rejection_Status":
-                    ma_rejection_status,
-
-                    "Spread %": spread_percent,
-
-                    "RSI": rsi,
-
-                    "ATR %": atr_percent,
-
-                    "RS": rs_score,
-
-                    "Volume Ratio": volume_ratio,
-
-                    "Weekly":
-                    "UPTREND"
-                    if weekly_up
-                    else "DOWNTREND",
-
-                    "Liquidity(B)": round(
-                        avg_value20 / 1_000_000_000,
-                        2
-                    )
-
-                })
-
-            except:
-                continue
-
-        # =========================================
-        # DATAFRAME
-        # =========================================
-        df = pd.DataFrame(hasil)
-
-        market_df = pd.DataFrame(
-            market_results
-        )
-
-        # =========================================
-        # FINAL
-        # =========================================
-        if not df.empty:
-
-            df = df.sort_values(
-                by="Final Score",
-                ascending=False
-            ).reset_index(drop=True)
-
-            st.success(
-                "SCREENING SELESAI"
-            )
-
-            st.dataframe(
-                df,
-                use_container_width=True
-            )
-
-            # =========================================
-            # EXPORT EXCEL
-            # =========================================
-            output = BytesIO()
-
-            with pd.ExcelWriter(
-                output,
-                engine="openpyxl"
-            ) as writer:
-
-                summary_df = pd.DataFrame([
-
-                    {
-                        "Timestamp":
-                        datetime.now().strftime(
-                            "%d-%m-%Y %H:%M:%S"
-                        ),
-
-                        "Market Score":
-                        market_score,
-
-                        "Market Regime":
-                        market_regime
-                    }
-
-                ])
-
-                summary_df.to_excel(
-                    writer,
-                    sheet_name="Market",
-                    index=False,
-                    startrow=0
-                )
-
-                market_df.to_excel(
-                    writer,
-                    sheet_name="Market",
-                    index=False,
-                    startrow=4
-                )
-
-                df.to_excel(
-                    writer,
-                    sheet_name="Screener",
-                    index=False
-                )
-
-            output.seek(0)
-
-            st.download_button(
-
-                label="📥 Download Excel",
-
-                data=output,
-
-                file_name=
-                "HYBRID_SCREENING_MARKET.xlsx",
-
-                mime=
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-            )
-
-        else:
-
-            st.warning(
-                "Tidak ada saham yang lolos screening."
-            )
-
-    except Exception as e:
-
-        st.error(
-            f"ERROR BESAR: {e}"
-        )
+            else:
+                st.warning("Tidak ada saham yang lolos screening.")
