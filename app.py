@@ -1,7 +1,7 @@
 # =========================================
 # APP.PY
 # HYBRID SCREENING + MARKET LAYER
-# STREAMLIT VERSION
+# SAFE STREAMLIT VERSION
 # =========================================
 
 # =========================================
@@ -31,8 +31,10 @@ st.set_page_config(
 st.title("📈 HYBRID SCREENING + MARKET LAYER")
 
 st.markdown("""
-Upload file Excel berisi daftar saham  
-Kolom wajib: **Kode**
+Upload file Excel daftar saham
+
+Kolom wajib:
+- Kode
 """)
 
 # =========================================
@@ -207,44 +209,49 @@ def count_rejections(
 
     for i in range(len(recent_df)):
 
-        low = recent_df["Low"].iloc[i]
-        close = recent_df["Close"].iloc[i]
-        ma = recent_df[ma_col].iloc[i]
+        try:
 
-        if pd.isna(ma):
+            low = recent_df["Low"].iloc[i]
+            close = recent_df["Close"].iloc[i]
+            ma = recent_df[ma_col].iloc[i]
+
+            if pd.isna(ma):
+                continue
+
+            rejection = (
+
+                (
+                    low >= (
+                        ma * (1 - tolerance)
+                    )
+                )
+
+                and
+
+                (
+                    low <= (
+                        ma * (1 + tolerance)
+                    )
+                )
+
+                and
+
+                (
+                    close > ma
+                )
+
+            )
+
+            if rejection:
+                rejection_count += 1
+
+        except:
             continue
-
-        rejection = (
-
-            (
-                low >= (
-                    ma * (1 - tolerance)
-                )
-            )
-
-            and
-
-            (
-                low <= (
-                    ma * (1 + tolerance)
-                )
-            )
-
-            and
-
-            (
-                close > ma
-            )
-
-        )
-
-        if rejection:
-            rejection_count += 1
 
     return rejection_count
 
 # =========================================
-# MAIN PROCESS
+# MAIN
 # =========================================
 if uploaded_file and run_button:
 
@@ -256,6 +263,17 @@ if uploaded_file and run_button:
         excel_df = pd.read_excel(
             uploaded_file
         )
+
+        # =========================================
+        # VALIDASI KOLOM
+        # =========================================
+        if "Kode" not in excel_df.columns:
+
+            st.error(
+                "Kolom 'Kode' tidak ditemukan."
+            )
+
+            st.stop()
 
         # =========================================
         # LIST SAHAM
@@ -273,6 +291,11 @@ if uploaded_file and run_button:
             list(set(saham_list))
         )
 
+        saham_list = [
+            x for x in saham_list
+            if x != ".JK"
+        ]
+
         st.info(
             f"Jumlah saham: {len(saham_list)}"
         )
@@ -289,6 +312,14 @@ if uploaded_file and run_button:
             progress=False
         )
 
+        if ihsg.empty:
+
+            st.error(
+                "Gagal download IHSG"
+            )
+
+            st.stop()
+
         if isinstance(
             ihsg.columns,
             pd.MultiIndex
@@ -304,16 +335,21 @@ if uploaded_file and run_button:
             .str.title()
         )
 
-        for col in ihsg.columns:
-
-            ihsg[col] = pd.to_numeric(
-                ihsg[col],
-                errors="coerce"
-            )
-
         ihsg = ihsg[
             ihsg.index <= tanggal_input
         ].copy()
+
+        ihsg = ihsg.dropna(
+            subset=["Close"]
+        )
+
+        if len(ihsg) < 60:
+
+            st.error(
+                "Data IHSG kurang dari 60 hari"
+            )
+
+            st.stop()
 
         ihsg_close = (
             ihsg["Close"]
@@ -321,7 +357,7 @@ if uploaded_file and run_button:
         )
 
         # =========================================
-        # DOWNLOAD MARKET DATA
+        # MARKET DATA
         # =========================================
         st.write("Download market global...")
 
@@ -347,7 +383,7 @@ if uploaded_file and run_button:
                     progress=False
                 )
 
-                if market_df.empty or len(market_df) < 5:
+                if market_df.empty:
                     continue
 
                 if isinstance(
@@ -369,7 +405,7 @@ if uploaded_file and run_button:
                     subset=["Close"]
                 )
 
-                if market_df.empty or len(market_df) < 5:
+                if len(market_df) < 5:
                     continue
 
                 close_now = float(
@@ -381,7 +417,14 @@ if uploaded_file and run_button:
                 )
 
                 change_pct = round(
-                    ((close_now - close_prev) / close_prev) * 100,
+                    (
+                        (
+                            close_now -
+                            close_prev
+                        )
+                        /
+                        close_prev
+                    ) * 100,
                     2
                 )
 
@@ -391,50 +434,60 @@ if uploaded_file and run_button:
                 if nama == "EIDO":
 
                     if change_pct > 0.5:
+
                         status = "BULLISH"
                         score = 3
 
                     elif change_pct < -0.5:
+
                         status = "BEARISH"
                         score = -3
 
                 elif nama == "DXY":
 
                     if change_pct > 0.3:
+
                         status = "NEGATIVE"
                         score = -1
 
                     elif change_pct < -0.3:
+
                         status = "POSITIVE"
                         score = 1
 
                 elif nama == "USDIDR":
 
                     if change_pct > 0.3:
+
                         status = "NEGATIVE"
                         score = -2
 
                     elif change_pct < -0.3:
+
                         status = "POSITIVE"
                         score = 2
 
                 elif nama == "US10Y":
 
                     if change_pct > 1:
+
                         status = "RISK OFF"
                         score = -3
 
                     elif change_pct < -1:
+
                         status = "RISK ON"
                         score = 2
 
                 elif nama == "SP500":
 
                     if change_pct > 0.5:
+
                         status = "BULLISH"
                         score = 3
 
                     elif change_pct < -0.5:
+
                         status = "BEARISH"
                         score = -3
 
@@ -449,11 +502,8 @@ if uploaded_file and run_button:
 
                 })
 
-            except Exception as e:
-
-                st.warning(
-                    f"ERROR MARKET {nama}: {e}"
-                )
+            except:
+                continue
 
         # =========================================
         # MARKET REGIME
@@ -473,7 +523,7 @@ if uploaded_file and run_button:
         # =========================================
         # DOWNLOAD DAILY
         # =========================================
-        st.write("Download data harian...")
+        st.write("Download daily data...")
 
         daily_data = yf.download(
             tickers=saham_list,
@@ -487,7 +537,7 @@ if uploaded_file and run_button:
         # =========================================
         # DOWNLOAD WEEKLY
         # =========================================
-        st.write("Download data weekly...")
+        st.write("Download weekly data...")
 
         weekly_data = yf.download(
             tickers=saham_list,
@@ -505,7 +555,7 @@ if uploaded_file and run_button:
         is_multi = len(saham_list) > 1
 
         # =========================================
-        # FILTER LIQUIDITY
+        # LIQUIDITY
         # =========================================
         MIN_LIQUIDITY = 1_500_000_000
 
@@ -528,7 +578,7 @@ if uploaded_file and run_button:
                 )
 
                 # =========================================
-                # EXTRACT DATA
+                # EXTRACT
                 # =========================================
                 if is_multi:
 
@@ -553,12 +603,12 @@ if uploaded_file and run_button:
                     weekly = weekly_data.copy()
 
                 # =========================================
-                # VALIDASI EMPTY
+                # EMPTY CHECK
                 # =========================================
-                if data.empty or len(data) < 50:
+                if data.empty:
                     continue
 
-                if weekly.empty or len(weekly) < 20:
+                if weekly.empty:
                     continue
 
                 # =========================================
@@ -592,7 +642,7 @@ if uploaded_file and run_button:
                 ].copy()
 
                 # =========================================
-                # CLEAN DATA
+                # CLEAN
                 # =========================================
                 data = (
                     data
@@ -607,27 +657,33 @@ if uploaded_file and run_button:
                 )
 
                 # =========================================
-                # VALIDASI DATA
+                # VALIDASI
                 # =========================================
-                if data.empty or len(data) < 220:
+                if len(data) < 220:
                     continue
 
-                if weekly.empty or len(weekly) < 25:
+                if len(weekly) < 25:
                     continue
 
-                if data["Close"].dropna().shape[0] < 220:
+                if len(data["Close"].dropna()) < 220:
                     continue
 
-                if weekly["Close"].dropna().shape[0] < 25:
+                if len(weekly["Close"].dropna()) < 25:
                     continue
 
-                if data["Volume"].dropna().shape[0] < 20:
+                if len(data["Volume"].dropna()) < 20:
                     continue
 
                 # =========================================
                 # CLOSE SERIES
                 # =========================================
-                close_series = data["Close"]
+                close_series = (
+                    data["Close"]
+                    .dropna()
+                )
+
+                if len(close_series) < 220:
+                    continue
 
                 # =========================================
                 # MA
@@ -645,8 +701,15 @@ if uploaded_file and run_button:
                 # =========================================
                 delta = close_series.diff()
 
-                gain = delta.where(delta > 0, 0)
-                loss = -delta.where(delta < 0, 0)
+                gain = delta.where(
+                    delta > 0,
+                    0
+                )
+
+                loss = -delta.where(
+                    delta < 0,
+                    0
+                )
 
                 avg_gain = gain.ewm(
                     alpha=1/14,
@@ -664,52 +727,10 @@ if uploaded_file and run_button:
 
                 data["RSI"] = (
                     100 -
-                    (100 / (1 + rs))
-                )
-
-                # =========================================
-                # MACD
-                # =========================================
-                ema8 = close_series.ewm(
-                    span=8,
-                    adjust=False
-                ).mean()
-
-                ema21 = close_series.ewm(
-                    span=21,
-                    adjust=False
-                ).mean()
-
-                data["MACD"] = ema8 - ema21
-
-                data["MACD_SIGNAL"] = (
-                    data["MACD"]
-                    .ewm(span=5, adjust=False)
-                    .mean()
-                )
-
-                # =========================================
-                # STOCH RSI
-                # =========================================
-                rsi_min = data["RSI"].rolling(5).min()
-                rsi_max = data["RSI"].rolling(5).max()
-
-                data["STOCH_RSI"] = (
-                    (data["RSI"] - rsi_min)
-                    /
-                    (rsi_max - rsi_min)
-                ) * 100
-
-                data["K"] = (
-                    data["STOCH_RSI"]
-                    .rolling(3)
-                    .mean()
-                )
-
-                data["D"] = (
-                    data["K"]
-                    .rolling(3)
-                    .mean()
+                    (
+                        100 /
+                        (1 + rs)
+                    )
                 )
 
                 # =========================================
@@ -730,7 +751,7 @@ if uploaded_file and run_button:
                     data["Volume"] > 0
                 ].copy()
 
-                if valid_volume.empty or len(valid_volume) < 20:
+                if len(valid_volume) < 20:
                     continue
 
                 volume_now = float(
@@ -744,7 +765,8 @@ if uploaded_file and run_button:
                 )
 
                 if (
-                    pd.isna(volume_avg) or
+                    pd.isna(volume_avg)
+                    or
                     volume_avg <= 0
                 ):
 
@@ -753,7 +775,8 @@ if uploaded_file and run_button:
                 else:
 
                     volume_ratio = round(
-                        volume_now / volume_avg,
+                        volume_now /
+                        volume_avg,
                         2
                     )
 
@@ -795,16 +818,29 @@ if uploaded_file and run_button:
                     .mean()
                 )
 
-                weekly_close = float(
+                weekly_close_series = (
                     weekly["Close"]
                     .dropna()
-                    .iloc[-1]
+                )
+
+                weekly_ma20_series = (
+                    weekly["MA20W"]
+                    .dropna()
+                )
+
+                if (
+                    weekly_close_series.empty
+                    or
+                    weekly_ma20_series.empty
+                ):
+                    continue
+
+                weekly_close = float(
+                    weekly_close_series.iloc[-1]
                 )
 
                 weekly_ma20 = float(
-                    weekly["MA20W"]
-                    .dropna()
-                    .iloc[-1]
+                    weekly_ma20_series.iloc[-1]
                 )
 
                 weekly_up = (
@@ -813,28 +849,68 @@ if uploaded_file and run_button:
                 )
 
                 # =========================================
-                # LAST VALUE
+                # SAFE LAST VALUE
                 # =========================================
-                close = float(close_series.iloc[-1])
+                try:
 
-                ma3 = float(data["MA3"].iloc[-1])
-                ma5 = float(data["MA5"].iloc[-1])
-                ma10 = float(data["MA10"].iloc[-1])
-                ma20 = float(data["MA20"].iloc[-1])
-                ma50 = float(data["MA50"].iloc[-1])
-                ma100 = float(data["MA100"].iloc[-1])
+                    close = float(
+                        close_series.iloc[-1]
+                    )
 
-                rsi = round(
-                    float(data["RSI"].iloc[-1]),
-                    2
-                )
+                    ma3 = float(
+                        data["MA3"].dropna().iloc[-1]
+                    )
 
-                atr = float(data["ATR"].iloc[-1])
+                    ma5 = float(
+                        data["MA5"].dropna().iloc[-1]
+                    )
 
-                atr_percent = round(
-                    float(data["ATR_PERCENT"].iloc[-1]),
-                    2
-                )
+                    ma10 = float(
+                        data["MA10"].dropna().iloc[-1]
+                    )
+
+                    ma20 = float(
+                        data["MA20"].dropna().iloc[-1]
+                    )
+
+                    ma50 = float(
+                        data["MA50"].dropna().iloc[-1]
+                    )
+
+                    ma100 = float(
+                        data["MA100"].dropna().iloc[-1]
+                    )
+
+                    ma200 = float(
+                        data["MA200"].dropna().iloc[-1]
+                    )
+
+                    rsi = round(
+                        float(
+                            data["RSI"]
+                            .dropna()
+                            .iloc[-1]
+                        ),
+                        2
+                    )
+
+                    atr = float(
+                        data["ATR"]
+                        .dropna()
+                        .iloc[-1]
+                    )
+
+                    atr_percent = round(
+                        float(
+                            data["ATR_PERCENT"]
+                            .dropna()
+                            .iloc[-1]
+                        ),
+                        2
+                    )
+
+                except:
+                    continue
 
                 # =========================================
                 # REJECTION
@@ -847,13 +923,28 @@ if uploaded_file and run_button:
                     0.005
                 )
 
+                ma50_reject = count_rejections(
+                    recent_4,
+                    "MA50",
+                    0.01
+                )
+
+                ma200_reject = count_rejections(
+                    recent_4,
+                    "MA200",
+                    0.015
+                )
+
                 rejection_text = []
 
                 if ma20_reject >= 1:
+                    rejection_text.append("MA20")
 
-                    rejection_text.append(
-                        "MA20"
-                    )
+                if ma50_reject >= 1:
+                    rejection_text.append("MA50")
+
+                if ma200_reject >= 1:
+                    rejection_text.append("MA200")
 
                 if len(rejection_text) == 0:
 
@@ -892,25 +983,39 @@ if uploaded_file and run_button:
 
                 spread_percent = round(
                     (
-                        max(ma_valid) -
+                        max(ma_valid)
+                        -
                         min(ma_valid)
-                    ) / close * 100,
+                    )
+                    /
+                    close
+                    * 100,
                     2
                 )
 
                 # =========================================
-                # RS
+                # RS SAFE
                 # =========================================
+                if len(close_series) < 60:
+                    continue
+
+                if len(ihsg_close) < 60:
+                    continue
+
                 stock_return = (
+
                     close_series.iloc[-1]
                     /
                     close_series.iloc[-60]
+
                 ) - 1
 
                 ihsg_return = (
+
                     ihsg_close.iloc[-1]
                     /
                     ihsg_close.iloc[-60]
+
                 ) - 1
 
                 rs_score = round(
@@ -923,16 +1028,25 @@ if uploaded_file and run_button:
                 # SCORE
                 # =========================================
                 final_score = round(
+
                     (
                         rs_score * 20
-                    ) +
+                    )
+
+                    +
+
                     (
                         volume_ratio * 5
-                    ) +
+                    )
+
+                    +
+
                     (
                         10 - spread_percent
                     ),
+
                     2
+
                 )
 
                 # =========================================
@@ -964,12 +1078,19 @@ if uploaded_file and run_button:
                 hasil.append({
 
                     "Saham": kode.replace(".JK", ""),
+
                     "Final Score": final_score,
-                    "Quality": quality,
+
                     "Market Regime": market_regime,
+
+                    "Quality": quality,
+
                     "Close": int(close),
 
                     "S.STATE": S_state,
+
+                    "MA_Rejection_Status":
+                    ma_rejection_status,
 
                     "Spread %": spread_percent,
 
@@ -981,8 +1102,10 @@ if uploaded_file and run_button:
 
                     "Volume Ratio": volume_ratio,
 
-                    "MA_Rejection_Status":
-                    ma_rejection_status,
+                    "Weekly":
+                    "UPTREND"
+                    if weekly_up
+                    else "DOWNTREND",
 
                     "Liquidity(B)": round(
                         avg_value20 / 1_000_000_000,
@@ -991,11 +1114,8 @@ if uploaded_file and run_button:
 
                 })
 
-            except Exception as e:
-
-                st.warning(
-                    f"ERROR {kode}: {e}"
-                )
+            except:
+                continue
 
         # =========================================
         # DATAFRAME
@@ -1026,7 +1146,7 @@ if uploaded_file and run_button:
             )
 
             # =========================================
-            # EXCEL EXPORT
+            # EXPORT EXCEL
             # =========================================
             output = BytesIO()
 
@@ -1036,13 +1156,20 @@ if uploaded_file and run_button:
             ) as writer:
 
                 summary_df = pd.DataFrame([
+
                     {
-                        "Timestamp": datetime.now().strftime(
+                        "Timestamp":
+                        datetime.now().strftime(
                             "%d-%m-%Y %H:%M:%S"
                         ),
-                        "Market Score": market_score,
-                        "Market Regime": market_regime
+
+                        "Market Score":
+                        market_score,
+
+                        "Market Regime":
+                        market_regime
                     }
+
                 ])
 
                 summary_df.to_excel(
@@ -1068,10 +1195,17 @@ if uploaded_file and run_button:
             output.seek(0)
 
             st.download_button(
+
                 label="📥 Download Excel",
+
                 data=output,
-                file_name="HYBRID_SCREENING_MARKET.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+                file_name=
+                "HYBRID_SCREENING_MARKET.xlsx",
+
+                mime=
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
             )
 
         else:
@@ -1082,4 +1216,6 @@ if uploaded_file and run_button:
 
     except Exception as e:
 
-        st.error(f"ERROR: {e}")
+        st.error(
+            f"ERROR BESAR: {e}"
+        )
