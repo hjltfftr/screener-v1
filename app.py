@@ -127,11 +127,21 @@ if uploaded_file is not None:
             
             ihsg.columns = ihsg.columns.str.title()
             
+            # PROTEKSI ERROR IHSG
+            if "Close" not in ihsg.columns:
+                st.error("Gagal mengunduh data IHSG dari Yahoo Finance (kolom Close tidak ditemukan). Silakan coba beberapa saat lagi.")
+                st.stop()
+            
             for col in ihsg.columns:
                 ihsg[col] = pd.to_numeric(ihsg[col], errors="coerce")
 
             ihsg = ihsg[ihsg.index <= tanggal_input].copy()
             ihsg_close = ihsg["Close"].dropna()
+
+            # PROTEKSI POSITIONAL INDEXER OUT OF BOUNDS (-60)
+            if len(ihsg_close) < 60:
+                st.error(f"Data IHSG yang tersedia kurang dari 60 hari (hanya {len(ihsg_close)} hari). Tidak dapat menghitung RS Score. Pastikan tanggal atau koneksi Yahoo Finance aman.")
+                st.stop()
 
             # =========================================
             # DOWNLOAD MARKET DATA
