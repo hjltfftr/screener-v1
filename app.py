@@ -103,7 +103,7 @@ def count_rejections(recent_df, ma_col, tolerance):
 st.set_page_config(page_title="Hybrid Screening & Market Layer", layout="wide")
 st.title("📈 Hybrid Screening + Market Layer")
 
-st.info("💡 Aplikasi ini otomatis menarik daftar seluruh saham IDX dan Sektornya dari TradingView.")
+st.info("💡 Aplikasi ini menarik data saham dari TradingView dan mengkalkulasi rotasi sektor global (Intermarket Analysis).")
 
 # =========================================
 # INPUT MODE TANGGAL
@@ -151,12 +151,10 @@ if st.button("Mulai Screening"):
 
         if isinstance(ihsg.columns, pd.MultiIndex):
             ihsg.columns = ihsg.columns.get_level_values(0)
-        
         ihsg.columns = ihsg.columns.str.title()
         
-        # PROTEKSI ERROR IHSG
         if "Close" not in ihsg.columns:
-            st.error("Gagal mengunduh data IHSG dari Yahoo Finance (kolom Close tidak ditemukan). Silakan coba beberapa saat lagi.")
+            st.error("Gagal mengunduh data IHSG dari Yahoo Finance. Silakan coba beberapa saat lagi.")
             st.stop()
         
         for col in ihsg.columns:
@@ -165,21 +163,21 @@ if st.button("Mulai Screening"):
         ihsg = ihsg[ihsg.index <= tanggal_input].copy()
         ihsg_close = ihsg["Close"].dropna()
 
-        # PROTEKSI POSITIONAL INDEXER OUT OF BOUNDS (-60)
         if len(ihsg_close) < 60:
-            st.error(f"Data IHSG yang tersedia kurang dari 60 hari (hanya {len(ihsg_close)} hari). Tidak dapat menghitung RS Score. Pastikan tanggal atau koneksi Yahoo Finance aman.")
+            st.error(f"Data IHSG kurang dari 60 hari. Pastikan tanggal atau koneksi aman.")
             st.stop()
 
         # =========================================
-        # DOWNLOAD MARKET DATA
+        # DOWNLOAD MARKET DATA (RISK SENTIMENT)
         # =========================================
-        st.write("Download market global...")
+        st.write("Download market global & indikator ketakutan...")
         market_tickers = {
             "EIDO": "EIDO",
             "DXY": "DX-Y.NYB",
             "USDIDR": "IDR=X",
             "US10Y": "^TNX",
-            "SP500": "^GSPC"
+            "SP500": "^GSPC",
+            "VIX": "^VIX"
         }
 
         market_results = []
@@ -188,16 +186,14 @@ if st.button("Mulai Screening"):
         for nama, ticker in market_tickers.items():
             try:
                 market_df_raw = yf.download(ticker, period="1mo", auto_adjust=False, progress=False)
-                if market_df_raw.empty or len(market_df_raw) < 5:
-                    continue
+                if market_df_raw.empty or len(market_df_raw) < 5: continue
 
                 if isinstance(market_df_raw.columns, pd.MultiIndex):
                     market_df_raw.columns = market_df_raw.columns.get_level_values(0)
                 market_df_raw.columns = market_df_raw.columns.str.title()
                 market_df_raw = market_df_raw.dropna(subset=["Close"])
 
-                if market_df_raw.empty or len(market_df_raw) < 5:
-                    continue
+                if market_df_raw.empty or len(market_df_raw) < 5: continue
 
                 close_now = float(market_df_raw["Close"].iloc[-1])
                 close_prev = float(market_df_raw["Close"].iloc[-2])
@@ -207,30 +203,23 @@ if st.button("Mulai Screening"):
                 score = 0
 
                 if nama == "EIDO":
-                    if change_pct > 0.5:
-                        status, score = "BULLISH", 3
-                    elif change_pct < -0.5:
-                        status, score = "BEARISH", -3
+                    if change_pct > 0.5: status, score = "BULLISH", 3
+                    elif change_pct < -0.5: status, score = "BEARISH", -3
                 elif nama == "DXY":
-                    if change_pct > 0.3:
-                        status, score = "NEGATIVE", -1
-                    elif change_pct < -0.3:
-                        status, score = "POSITIVE", 1
+                    if change_pct > 0.3: status, score = "NEGATIVE", -1
+                    elif change_pct < -0.3: status, score = "POSITIVE", 1
                 elif nama == "USDIDR":
-                    if change_pct > 0.3:
-                        status, score = "NEGATIVE", -2
-                    elif change_pct < -0.3:
-                        status, score = "POSITIVE", 2
+                    if change_pct > 0.3: status, score = "NEGATIVE", -2
+                    elif change_pct < -0.3: status, score = "POSITIVE", 2
                 elif nama == "US10Y":
-                    if change_pct > 1:
-                        status, score = "RISK OFF", -3
-                    elif change_pct < -1:
-                        status, score = "RISK ON", 2
+                    if change_pct > 1: status, score = "RISK OFF", -3
+                    elif change_pct < -1: status, score = "RISK ON", 2
                 elif nama == "SP500":
-                    if change_pct > 0.5:
-                        status, score = "BULLISH", 3
-                    elif change_pct < -0.5:
-                        status, score = "BEARISH", -3
+                    if change_pct > 0.5: status, score = "BULLISH", 3
+                    elif change_pct < -0.5: status, score = "BEARISH", -3
+                elif nama == "VIX":
+                    if change_pct > 5: status, score = "PANIC", -4
+                    elif change_pct < -2: status, score = "CALM", 2
 
                 market_score += score
                 market_results.append({
@@ -239,21 +228,100 @@ if st.button("Mulai Screening"):
                     "Status": status,
                     "Score": score
                 })
-
             except Exception as e:
                 st.write(f"ERROR MARKET {nama}: {e}")
 
-        if market_score >= 5:
-            market_regime = "✅ RISK ON"
-        elif market_score <= -5:
-            market_regime = "❌ RISK OFF"
-        else:
-            market_regime = "⚠️ NEUTRAL"
+        if market_score >= 5: market_regime = "✅ RISK ON"
+        elif market_score <= -5: market_regime = "❌ RISK OFF"
+        else: market_regime = "⚠️ NEUTRAL"
 
         # =========================================
-        # DOWNLOAD DAILY & WEEKLY
+        # DOWNLOAD KOMODITAS & ETF SEKTORAL
         # =========================================
-        st.write("Download data harian dan mingguan...")
+        st.write("Download rotasi intermarket & sektoral global...")
+        commodity_tickers = {
+            "Oil": "CL=F",
+            "Gold": "GC=F",
+            "Silver": "SI=F",
+            "Copper": "HG=F",
+            "CPO_Proxy": "ZL=F",
+            "Agriculture": "DBA",
+            "Shipping": "BDRY",
+            "GlobalBank": "XLF",
+            "GlobalHealth": "XLV",
+            "GlobalTech": "QQQ",
+            "GlobalProperty": "XLRE",
+            "GlobalTelecom": "XLC",
+            "GlobalTransport": "^DJT",
+            "GlobalRetail": "XLY"
+        }
+        
+        commodity_results = []
+        
+        # Wadah bonus untuk di-mapping ke saham nanti
+        commodity_bonus_pool = {
+            "Energy": 0, "Basic": 0, "Industrial": 0, "Financial": 0,
+            "Health": 0, "Non-Cyclical": 0, "Technology": 0, 
+            "Real Estate": 0, "Telecom": 0, "Transport": 0, "Cyclical": 0
+        }
+
+        for nama, ticker in commodity_tickers.items():
+            try:
+                comm_df_raw = yf.download(ticker, period="1mo", auto_adjust=False, progress=False)
+                if comm_df_raw.empty or len(comm_df_raw) < 5: continue
+
+                if isinstance(comm_df_raw.columns, pd.MultiIndex):
+                    comm_df_raw.columns = comm_df_raw.columns.get_level_values(0)
+                comm_df_raw.columns = comm_df_raw.columns.str.title()
+                comm_df_raw = comm_df_raw.dropna(subset=["Close"])
+                if comm_df_raw.empty or len(comm_df_raw) < 5: continue
+
+                close_now = float(comm_df_raw["Close"].iloc[-1])
+                close_prev = float(comm_df_raw["Close"].iloc[-2])
+                change_pct = round(((close_now - close_prev) / close_prev) * 100, 2)
+
+                status = "NEUTRAL"
+                if change_pct > 0.3: status = "BULLISH"
+                elif change_pct < -0.3: status = "BEARISH"
+
+                # Logika Injeksi Poin
+                if status == "BULLISH":
+                    if nama == "Oil": commodity_bonus_pool["Energy"] += 3
+                    elif nama in ["Gold", "Silver", "Copper"]: commodity_bonus_pool["Basic"] += 2
+                    elif nama == "Shipping": commodity_bonus_pool["Industrial"] += 2
+                    elif nama == "GlobalBank": commodity_bonus_pool["Financial"] += 3
+                    elif nama == "GlobalHealth": commodity_bonus_pool["Health"] += 2
+                    elif nama in ["CPO_Proxy", "Agriculture"]: commodity_bonus_pool["Non-Cyclical"] += 2
+                    elif nama == "GlobalTech": commodity_bonus_pool["Technology"] += 3
+                    elif nama == "GlobalProperty": commodity_bonus_pool["Real Estate"] += 2
+                    elif nama == "GlobalTelecom": commodity_bonus_pool["Telecom"] += 2
+                    elif nama == "GlobalTransport": commodity_bonus_pool["Transport"] += 2
+                    elif nama == "GlobalRetail": commodity_bonus_pool["Cyclical"] += 2
+                elif status == "BEARISH":
+                    if nama == "Oil": commodity_bonus_pool["Energy"] -= 3
+                    elif nama in ["Gold", "Silver", "Copper"]: commodity_bonus_pool["Basic"] -= 2
+                    elif nama == "Shipping": commodity_bonus_pool["Industrial"] -= 2
+                    elif nama == "GlobalBank": commodity_bonus_pool["Financial"] -= 3
+                    elif nama == "GlobalHealth": commodity_bonus_pool["Health"] -= 2
+                    elif nama in ["CPO_Proxy", "Agriculture"]: commodity_bonus_pool["Non-Cyclical"] -= 2
+                    elif nama == "GlobalTech": commodity_bonus_pool["Technology"] -= 3
+                    elif nama == "GlobalProperty": commodity_bonus_pool["Real Estate"] -= 2
+                    elif nama == "GlobalTelecom": commodity_bonus_pool["Telecom"] -= 2
+                    elif nama == "GlobalTransport": commodity_bonus_pool["Transport"] -= 2
+                    elif nama == "GlobalRetail": commodity_bonus_pool["Cyclical"] -= 2
+
+                commodity_results.append({
+                    "Indicator/Sektor": nama,
+                    "Change %": change_pct,
+                    "Status": status
+                })
+            except Exception as e:
+                st.write(f"ERROR COMMODITY {nama}: {e}")
+
+        # =========================================
+        # DOWNLOAD DAILY & WEEKLY SAHAM
+        # =========================================
+        st.write("Download data harian dan mingguan saham...")
         daily_data = yf.download(tickers=saham_list, period="1y", group_by="ticker", auto_adjust=False, progress=False, threads=True)
         weekly_data = yf.download(tickers=saham_list, period="3y", interval="1wk", group_by="ticker", auto_adjust=False, progress=False, threads=True)
 
@@ -272,8 +340,7 @@ if st.button("Mulai Screening"):
                     try:
                         data = daily_data[kode].copy()
                         weekly = weekly_data[kode].copy()
-                    except:
-                        continue
+                    except: continue
                 else:
                     data = daily_data.copy()
                     weekly = weekly_data.copy()
@@ -411,30 +478,23 @@ if st.button("Mulai Screening"):
                 rejection_text = []
 
                 if ma20_reject >= 2:
-                    rejection_score += 2
-                    rejection_text.append(f"MA20 ({ma20_reject}x)")
+                    rejection_score += 2; rejection_text.append(f"MA20 ({ma20_reject}x)")
                 elif ma20_reject == 1:
-                    rejection_score += 1
-                    rejection_text.append("MA20")
+                    rejection_score += 1; rejection_text.append("MA20")
                 if close < ma20: rejection_score -= 1
 
                 if ma50_reject >= 2:
-                    rejection_score += 3
-                    rejection_text.append(f"MA50 ({ma50_reject}x)")
+                    rejection_score += 3; rejection_text.append(f"MA50 ({ma50_reject}x)")
                 elif ma50_reject == 1:
-                    rejection_score += 2
-                    rejection_text.append("MA50")
+                    rejection_score += 2; rejection_text.append("MA50")
                 if close < ma50: rejection_score -= 2
 
-                if ma50_reject >= 1 and weekly_up:
-                    rejection_score += 1
+                if ma50_reject >= 1 and weekly_up: rejection_score += 1
 
                 if ma200_reject >= 2:
-                    rejection_score += 4
-                    rejection_text.append(f"MA200 ({ma200_reject}x)")
+                    rejection_score += 4; rejection_text.append(f"MA200 ({ma200_reject}x)")
                 elif ma200_reject == 1:
-                    rejection_score += 2
-                    rejection_text.append("MA200")
+                    rejection_score += 2; rejection_text.append("MA200")
                 if close < ma200: rejection_score -= 4
 
                 volume_confirmation = False
@@ -442,10 +502,8 @@ if st.button("Mulai Screening"):
                     rejection_score += 1
                     volume_confirmation = True
 
-                if len(rejection_text) == 0:
-                    ma_rejection_status = "None"
-                else:
-                    ma_rejection_status = ",".join(rejection_text)
+                if len(rejection_text) == 0: ma_rejection_status = "None"
+                else: ma_rejection_status = ",".join(rejection_text)
 
                 S_state = get_state(close, ma3, ma5, ma10, ma20, ma20, ma20)
                 M_state = get_state(close, ma3, ma5, ma10, ma20, ma50, ma50)
@@ -468,26 +526,18 @@ if st.button("Mulai Screening"):
                 cutloss_price = "-"
 
                 if volume_ratio >= 1.5 and rs_score > 0.10 and close > ma5 and spread_percent > 4.5:
-                    market_phase = "4. STRONG UPTREND"
-                    action_plan = "FOLLOW MOMENTUM"
-                    entry_price = f"{int(ma3)}"
-                    cutloss_price = int(close - (atr * 1.5))
+                    market_phase = "4. STRONG UPTREND"; action_plan = "FOLLOW MOMENTUM"
+                    entry_price = f"{int(ma3)}"; cutloss_price = int(close - (atr * 1.5))
                 elif spread_percent < 3 and close > ma20:
-                    market_phase = "1. MBULET"
-                    action_plan = "BREAKOUT BASE"
+                    market_phase = "1. MBULET"; action_plan = "BREAKOUT BASE"
                     highest_ma = max([ma3, ma5, ma10, ma20])
-                    entry_price = f"> {int(highest_ma)}"
-                    cutloss_price = int(ma20 - (atr * 0.5))
+                    entry_price = f"> {int(highest_ma)}"; cutloss_price = int(ma20 - (atr * 0.5))
                 elif semua_dinamis_di_atas and 3 <= spread_percent <= 4.5:
-                    market_phase = "2. DINAMIS RAPAT"
-                    action_plan = "BUY PULLBACK"
-                    entry_price = f"{int(ma10)} - {int(ma5)}"
-                    cutloss_price = int(ma20 - atr)
+                    market_phase = "2. DINAMIS RAPAT"; action_plan = "BUY PULLBACK"
+                    entry_price = f"{int(ma10)} - {int(ma5)}"; cutloss_price = int(ma20 - atr)
                 elif semua_dinamis_di_atas and 4.5 < spread_percent <= 7 and 0 < jarak_ke_ma50 <= 10 and trend_up:
-                    market_phase = "3. DINAMIS RENGGANG"
-                    action_plan = "BUY CONTINUATION"
-                    entry_price = f"{int(ma5)}"
-                    cutloss_price = int(ma10 - atr)
+                    market_phase = "3. DINAMIS RENGGANG"; action_plan = "BUY CONTINUATION"
+                    entry_price = f"{int(ma5)}"; cutloss_price = int(ma10 - atr)
                 elif close < ma20:
                     market_phase = "WEAK"
 
@@ -562,7 +612,25 @@ if st.button("Mulai Screening"):
                     elif market_phase == "1. MBULET": market_bonus = -2
                     elif market_phase == "WEAK": market_bonus = -5
 
-                final_score = score + market_bonus
+                # PENCARIAN SEKTOR DAN APLIKASI BONUS INTERMARKET
+                sektor_saham = sektor_dict.get(kode, "-")
+                sec_up = str(sektor_saham).upper()
+                commodity_bonus = 0
+                
+                # Pemetaan cerdas ke string sektor (aman dari variasi teks TradingView)
+                if "ENERGY" in sec_up: commodity_bonus += commodity_bonus_pool["Energy"]
+                elif "BASIC" in sec_up: commodity_bonus += commodity_bonus_pool["Basic"]
+                elif "INDUSTRIAL" in sec_up: commodity_bonus += commodity_bonus_pool["Industrial"]
+                elif "FINAN" in sec_up: commodity_bonus += commodity_bonus_pool["Financial"]
+                elif "HEALTH" in sec_up: commodity_bonus += commodity_bonus_pool["Health"]
+                elif "NON-CYCLICAL" in sec_up or "NON CYCLICAL" in sec_up: commodity_bonus += commodity_bonus_pool["Non-Cyclical"]
+                elif "CYCLICAL" in sec_up: commodity_bonus += commodity_bonus_pool["Cyclical"]
+                elif "TECH" in sec_up: commodity_bonus += commodity_bonus_pool["Technology"]
+                elif "ESTATE" in sec_up or "PROPERTY" in sec_up: commodity_bonus += commodity_bonus_pool["Real Estate"]
+                elif "TELECOM" in sec_up or "INFRA" in sec_up: commodity_bonus += commodity_bonus_pool["Telecom"]
+                elif "TRANSPORT" in sec_up or "LOGISTIC" in sec_up: commodity_bonus += commodity_bonus_pool["Transport"]
+
+                final_score = score + market_bonus + commodity_bonus
 
                 if final_score >= 40: quality = "🔥 SUPER STRONG"
                 elif final_score >= 30: quality = "🚀 STRONG"
@@ -570,14 +638,13 @@ if st.button("Mulai Screening"):
                 elif final_score >= 8: quality = "👀 WATCHLIST"
                 else: quality = "❌ AVOID"
 
-                sektor_saham = sektor_dict.get(kode, "-")
-
                 hasil.append({
                     "Saham": kode.replace(".JK", ""),
                     "Sektor": sektor_saham,
                     "Phase": market_phase,
                     "Score": score,
                     "Market Bonus": market_bonus,
+                    "Sektor Bonus": commodity_bonus,
                     "Final Score": final_score,
                     "Market Regime": market_regime,
                     "Quality": quality,
@@ -606,14 +673,15 @@ if st.button("Mulai Screening"):
                 })
 
             except Exception as e:
-                st.write(f"ERROR {kode}: {e}")
+                pass # Silently skip errors on individual stocks to keep loop clean
 
         df = pd.DataFrame(hasil)
         market_df_final = pd.DataFrame(market_results)
+        commodity_df_final = pd.DataFrame(commodity_results)
 
         if not df.empty:
             kolom_urut = [
-                "Saham", "Sektor", "Phase", "Score", "Market Bonus", "Final Score", "Market Regime", "Quality",
+                "Saham", "Sektor", "Phase", "Score", "Market Bonus", "Sektor Bonus", "Final Score", "Market Regime", "Quality",
                 "Strategi", "Antre Beli", "Cut Loss", "Close", "S.STATE", "M.STATE", "L.STATE",
                 "MA_Rejection_Status", "Spread %", "Spread", "RSI", "RSI Status", "ATR %", "ATR Status",
                 "RS", "RS Status", "Volume Ratio", "Volume", "MACD", "STOCH RSI", "Weekly", "Liquidity(B)"
@@ -621,7 +689,6 @@ if st.button("Mulai Screening"):
             df = df[kolom_urut]
             df = df.sort_values(by="Final Score", ascending=False).reset_index(drop=True)
 
-            # Output to IO Bytes
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 summary_df = pd.DataFrame([{
@@ -629,23 +696,22 @@ if st.button("Mulai Screening"):
                     "Market Score": market_score,
                     "Market Regime": market_regime
                 }])
-                summary_df.to_excel(writer, sheet_name="Market", index=False, startrow=0)
-                market_df_final.to_excel(writer, sheet_name="Market", index=False, startrow=4)
+                summary_df.to_excel(writer, sheet_name="Market_Regime", index=False, startrow=0)
+                market_df_final.to_excel(writer, sheet_name="Market_Regime", index=False, startrow=4)
+                
+                commodity_df_final.to_excel(writer, sheet_name="Intermarket_Sectors", index=False)
                 df.to_excel(writer, sheet_name="Screener", index=False)
             
             output.seek(0)
             
-            st.success("✅ Screening Selesai!")
-            
-            # Menampilkan preview tabel di aplikasi
+            st.success("✅ Screening Canggih Selesai!")
             st.dataframe(df.head(15))
             
-            # Tombol Download
             st.download_button(
                 label="📥 Download Excel Hasil Screening",
                 data=output,
-                file_name=f"HYBRID_SCREENING_MARKET_{tanggal_input.date()}.xlsx",
+                file_name=f"HYBRID_SCREENING_PRO_{tanggal_input.date()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.warning("Tidak ada saham yang lolos screening.")
+            st.warning("Tidak ada saham yang memenuhi kriteria likuiditas dasar.")
