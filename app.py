@@ -101,9 +101,9 @@ def count_rejections(recent_df, ma_col, tolerance):
 # STREAMLIT UI
 # =========================================
 st.set_page_config(page_title="Hybrid Screening & Market Layer", layout="wide")
-st.title("📈 Hybrid Screening + Market Layer")
+st.title("📈 Hybrid Screening + Market Layer + Breakout Detector")
 
-st.info("💡 Aplikasi ini menarik data saham dari TradingView dan mengkalkulasi rotasi sektor global (Intermarket Analysis).")
+st.info("💡 Aplikasi ini menarik data saham dari TradingView, mengkalkulasi rotasi sektor global (Intermarket Analysis), dan mendeteksi Type 1 Breakout.")
 
 # =========================================
 # INPUT MODE TANGGAL
@@ -229,7 +229,7 @@ if st.button("Mulai Screening"):
                     "Score": score
                 })
             except Exception as e:
-                st.write(f"ERROR MARKET {nama}: {e}")
+                pass
 
         if market_score >= 5: market_regime = "✅ RISK ON"
         elif market_score <= -5: market_regime = "❌ RISK OFF"
@@ -240,25 +240,14 @@ if st.button("Mulai Screening"):
         # =========================================
         st.write("Download rotasi intermarket & sektoral global...")
         commodity_tickers = {
-            "Oil": "CL=F",
-            "Gold": "GC=F",
-            "Silver": "SI=F",
-            "Copper": "HG=F",
-            "CPO_Proxy": "ZL=F",
-            "Agriculture": "DBA",
-            "Shipping": "BDRY",
-            "GlobalBank": "XLF",
-            "GlobalHealth": "XLV",
-            "GlobalTech": "QQQ",
-            "GlobalProperty": "XLRE",
-            "GlobalTelecom": "XLC",
-            "GlobalTransport": "^DJT",
+            "Oil": "CL=F", "Gold": "GC=F", "Silver": "SI=F", "Copper": "HG=F",
+            "CPO_Proxy": "ZL=F", "Agriculture": "DBA", "Shipping": "BDRY",
+            "GlobalBank": "XLF", "GlobalHealth": "XLV", "GlobalTech": "QQQ",
+            "GlobalProperty": "XLRE", "GlobalTelecom": "XLC", "GlobalTransport": "^DJT",
             "GlobalRetail": "XLY"
         }
         
         commodity_results = []
-        
-        # Wadah bonus untuk di-mapping ke saham nanti
         commodity_bonus_pool = {
             "Energy": 0, "Basic": 0, "Industrial": 0, "Financial": 0,
             "Health": 0, "Non-Cyclical": 0, "Technology": 0, 
@@ -284,7 +273,6 @@ if st.button("Mulai Screening"):
                 if change_pct > 0.3: status = "BULLISH"
                 elif change_pct < -0.3: status = "BEARISH"
 
-                # Logika Injeksi Poin
                 if status == "BULLISH":
                     if nama == "Oil": commodity_bonus_pool["Energy"] += 3
                     elif nama in ["Gold", "Silver", "Copper"]: commodity_bonus_pool["Basic"] += 2
@@ -316,7 +304,7 @@ if st.button("Mulai Screening"):
                     "Status": status
                 })
             except Exception as e:
-                st.write(f"ERROR COMMODITY {nama}: {e}")
+                pass
 
         # =========================================
         # DOWNLOAD DAILY & WEEKLY SAHAM
@@ -362,12 +350,10 @@ if st.button("Mulai Screening"):
 
                 if data.empty or len(data) < 220: continue
                 if weekly.empty or len(weekly) < 25: continue
-                if data["Close"].dropna().shape[0] < 220: continue
-                if weekly["Close"].dropna().shape[0] < 25: continue
-                if data["Volume"].dropna().shape[0] < 20: continue
 
                 close_series = data["Close"]
 
+                # MA & Technicals
                 data["MA3"] = close_series.rolling(3).mean()
                 data["MA5"] = close_series.rolling(5).mean()
                 data["MA10"] = close_series.rolling(10).mean()
@@ -398,17 +384,36 @@ if st.button("Mulai Screening"):
                 data["ATR"] = calculate_atr(data)
                 data["ATR_PERCENT"] = (data["ATR"] / data["Close"]) * 100
 
+                # =========================================
+                # DETEKSI RECTANGLE BREAKOUT (TYPE 1)
+                # =========================================
+                window_rect = 60
+                max_width_pct = 0.20
+                proximity_pct = 0.02
+                
+                data['Resistance'] = data['High'].rolling(window=window_rect).max().shift(1)
+                data['Support'] = data['Low'].rolling(window=window_rect).min().shift(1)
+                data['Consolidation_Width'] = (data['Resistance'] - data['Support']) / data['Support']
+                data['Is_Rectangle'] = data['Consolidation_Width'] <= max_width_pct
+                
+                jarak_ke_res = (data['Resistance'] - data['Close']) / data['Close']
+                
+                # Mau Breakout: Masih di bawah resistance tapi dekat
+                data['Mau_Breakout'] = data['Is_Rectangle'] & (jarak_ke_res <= proximity_pct) & (data['Close'] <= data['Resistance'])
+                
+                # Breakout: Close hari ini menembus resistance historis
+                data['Breakout'] = data['Is_Rectangle'] & (data['Close'] > data['Resistance'])
+
                 valid_volume = data[data["Volume"] > 0].copy()
                 if valid_volume.empty or len(valid_volume) < 20: continue
-                if len(valid_volume["Volume"].dropna()) < 20: continue
+
+                # Identifikasi lonjakan volume untuk Type 1 Confirmation
+                data['Vol_MA20'] = data['Volume'].rolling(window=20).mean().shift(1)
+                data['High_Volume'] = data['Volume'] > (data['Vol_MA20'] * 1.5)
 
                 volume_now = float(valid_volume["Volume"].iloc[-1])
                 volume_avg = float(valid_volume["Volume"].tail(20).mean())
-
-                if pd.isna(volume_avg) or volume_avg <= 0:
-                    volume_ratio = 0
-                else:
-                    volume_ratio = round(volume_now / volume_avg, 2)
+                volume_ratio = 0 if pd.isna(volume_avg) or volume_avg <= 0 else round(volume_now / volume_avg, 2)
 
                 data["VALUE"] = data["Close"] * data["Volume"]
                 data["AVG_VALUE20"] = data["VALUE"].rolling(20).mean()
@@ -416,20 +421,13 @@ if st.button("Mulai Screening"):
 
                 if avg_value20_series.empty: continue
                 avg_value20 = float(avg_value20_series.iloc[-1])
-
                 if avg_value20 < MIN_LIQUIDITY: continue
 
                 weekly["MA20W"] = weekly["Close"].rolling(20).mean()
-                weekly_close_series = weekly["Close"].dropna()
-                weekly_ma20_series = weekly["MA20W"].dropna()
-
-                if weekly_close_series.empty or weekly_ma20_series.empty: continue
-
-                weekly_close = float(weekly_close_series.iloc[-1])
-                weekly_ma20 = float(weekly_ma20_series.iloc[-1])
+                if weekly["Close"].dropna().empty: continue
+                weekly_close = float(weekly["Close"].dropna().iloc[-1])
+                weekly_ma20 = float(weekly["MA20W"].dropna().iloc[-1])
                 weekly_up = (weekly_close > weekly_ma20)
-
-                if len(close_series) < 60: continue
 
                 close = float(close_series.iloc[-1])
                 ma3 = float(data["MA3"].iloc[-1])
@@ -439,15 +437,16 @@ if st.button("Mulai Screening"):
                 ma50 = float(data["MA50"].iloc[-1])
                 ma100 = float(data["MA100"].iloc[-1])
                 ma200 = float(data["MA200"].iloc[-1])
-
                 rsi_val = round(float(data["RSI"].iloc[-1]), 2)
                 atr = float(data["ATR"].iloc[-1])
                 atr_percent = round(float(data["ATR_PERCENT"].iloc[-1]), 2)
 
-                critical_values = [close, ma20, ma50, ma100, ma200, rsi_val, atr]
-                if any(pd.isna(x) for x in critical_values): continue
-
-                if len(data) < 3: continue
+                # Ekstrak Status Rectangle Breakout terkini
+                mau_breakout_now = bool(data["Mau_Breakout"].iloc[-1])
+                breakout_now = bool(data["Breakout"].iloc[-1])
+                high_vol_now = bool(data["High_Volume"].iloc[-1])
+                resistance_now = float(data["Resistance"].iloc[-1])
+                support_now = float(data["Support"].iloc[-1])
 
                 macd_now = data["MACD"].iloc[-1]
                 macd_signal_now = data["MACD_SIGNAL"].iloc[-1]
@@ -477,30 +476,18 @@ if st.button("Mulai Screening"):
                 rejection_score = 0
                 rejection_text = []
 
-                if ma20_reject >= 2:
-                    rejection_score += 2; rejection_text.append(f"MA20 ({ma20_reject}x)")
-                elif ma20_reject == 1:
-                    rejection_score += 1; rejection_text.append("MA20")
+                if ma20_reject >= 2: rejection_score += 2; rejection_text.append(f"MA20 ({ma20_reject}x)")
+                elif ma20_reject == 1: rejection_score += 1; rejection_text.append("MA20")
                 if close < ma20: rejection_score -= 1
 
-                if ma50_reject >= 2:
-                    rejection_score += 3; rejection_text.append(f"MA50 ({ma50_reject}x)")
-                elif ma50_reject == 1:
-                    rejection_score += 2; rejection_text.append("MA50")
+                if ma50_reject >= 2: rejection_score += 3; rejection_text.append(f"MA50 ({ma50_reject}x)")
+                elif ma50_reject == 1: rejection_score += 2; rejection_text.append("MA50")
                 if close < ma50: rejection_score -= 2
-
                 if ma50_reject >= 1 and weekly_up: rejection_score += 1
 
-                if ma200_reject >= 2:
-                    rejection_score += 4; rejection_text.append(f"MA200 ({ma200_reject}x)")
-                elif ma200_reject == 1:
-                    rejection_score += 2; rejection_text.append("MA200")
+                if ma200_reject >= 2: rejection_score += 4; rejection_text.append(f"MA200 ({ma200_reject}x)")
+                elif ma200_reject == 1: rejection_score += 2; rejection_text.append("MA200")
                 if close < ma200: rejection_score -= 4
-
-                volume_confirmation = False
-                if volume_ratio >= 1.2 and (ma20_reject >= 1 or ma50_reject >= 1 or ma200_reject >= 1):
-                    rejection_score += 1
-                    volume_confirmation = True
 
                 if len(rejection_text) == 0: ma_rejection_status = "None"
                 else: ma_rejection_status = ",".join(rejection_text)
@@ -524,8 +511,25 @@ if st.button("Mulai Screening"):
                 action_plan = "WAIT"
                 entry_price = "-"
                 cutloss_price = "-"
+                rect_status_text = "NONE"
 
-                if volume_ratio >= 1.5 and rs_score > 0.10 and close > ma5 and spread_percent > 4.5:
+                # =========================================
+                # INTEGRASI MARKET PHASE DENGAN BREAKOUT
+                # =========================================
+                if breakout_now and high_vol_now:
+                    market_phase = "5. BREAKOUT TYPE 1"
+                    action_plan = "BUY CONFIRMED BREAKOUT"
+                    entry_price = f"> {int(resistance_now)}"
+                    # Cutloss ketat di bawah garis resistance (karena Type 1 tidak boleh retest dalam)
+                    cutloss_price = int(resistance_now - (atr * 0.5))
+                    rect_status_text = "TYPE 1 CONFIRMED"
+                elif mau_breakout_now:
+                    market_phase = "0. MAU BREAKOUT"
+                    action_plan = "WATCHLIST (HAMPIR BREAK)"
+                    entry_price = f"{int(close)} - {int(resistance_now)}"
+                    cutloss_price = int(support_now)
+                    rect_status_text = "MAU BREAKOUT"
+                elif volume_ratio >= 1.5 and rs_score > 0.10 and close > ma5 and spread_percent > 4.5:
                     market_phase = "4. STRONG UPTREND"; action_plan = "FOLLOW MOMENTUM"
                     entry_price = f"{int(ma3)}"; cutloss_price = int(close - (atr * 1.5))
                 elif spread_percent < 3 and close > ma20:
@@ -586,38 +590,41 @@ if st.button("Mulai Screening"):
                 elif macd_bear: score -= 3; macd_status = "BEARISH"
                 else: macd_status = "NEUTRAL"
 
-                if stoch_fresh_bull: score += 2; stoch_status = "FRESH BULL"
-                elif stoch_bull: score += 1; stoch_status = "BULLISH"
-                elif stoch_fresh_bear: score -= 2; stoch_status = "FRESH BEAR"
-                elif stoch_bear: score -= 1; stoch_status = "BEARISH"
-                else: stoch_status = "NEUTRAL"
-
-                if rsi_val > 78 and spread_percent > 8 and volume_ratio > 2:
-                    score -= 5
-
-                phase_score = {"4. STRONG UPTREND": 10, "3. DINAMIS RENGGANG": 8, "2. DINAMIS RAPAT": 7, "1. MBULET": 5, "SIDEWAYS": 0, "WEAK": -6}
+                # Update Skor Fase Market (Memberi bobot tinggi untuk Breakout)
+                phase_score = {
+                    "5. BREAKOUT TYPE 1": 15, 
+                    "4. STRONG UPTREND": 10, 
+                    "3. DINAMIS RENGGANG": 8, 
+                    "2. DINAMIS RAPAT": 7, 
+                    "1. MBULET": 5, 
+                    "0. MAU BREAKOUT": 8, 
+                    "SIDEWAYS": 0, 
+                    "WEAK": -6
+                }
                 score += phase_score.get(market_phase, 0)
 
                 market_bonus = 0
                 if market_regime == "✅ RISK ON":
-                    if market_phase == "4. STRONG UPTREND": market_bonus = 5
+                    if market_phase == "5. BREAKOUT TYPE 1": market_bonus = 6
+                    elif market_phase == "4. STRONG UPTREND": market_bonus = 5
                     elif market_phase == "3. DINAMIS RENGGANG": market_bonus = 3
                     elif market_phase == "2. DINAMIS RAPAT": market_bonus = 2
                     elif market_phase == "1. MBULET": market_bonus = 1
+                    elif market_phase == "0. MAU BREAKOUT": market_bonus = 4
                     elif market_phase == "WEAK": market_bonus = -2
                 elif market_regime == "❌ RISK OFF":
-                    if market_phase == "4. STRONG UPTREND": market_bonus = -1
+                    if market_phase == "5. BREAKOUT TYPE 1": market_bonus = -1
+                    elif market_phase == "4. STRONG UPTREND": market_bonus = -1
                     elif market_phase == "3. DINAMIS RENGGANG": market_bonus = -3
                     elif market_phase == "2. DINAMIS RAPAT": market_bonus = -4
                     elif market_phase == "1. MBULET": market_bonus = -2
+                    elif market_phase == "0. MAU BREAKOUT": market_bonus = -2
                     elif market_phase == "WEAK": market_bonus = -5
 
-                # PENCARIAN SEKTOR DAN APLIKASI BONUS INTERMARKET
                 sektor_saham = sektor_dict.get(kode, "-")
                 sec_up = str(sektor_saham).upper()
                 commodity_bonus = 0
                 
-                # Pemetaan cerdas ke string sektor (aman dari variasi teks TradingView)
                 if "ENERGY" in sec_up: commodity_bonus += commodity_bonus_pool["Energy"]
                 elif "BASIC" in sec_up: commodity_bonus += commodity_bonus_pool["Basic"]
                 elif "INDUSTRIAL" in sec_up: commodity_bonus += commodity_bonus_pool["Industrial"]
@@ -642,6 +649,7 @@ if st.button("Mulai Screening"):
                     "Saham": kode.replace(".JK", ""),
                     "Sektor": sektor_saham,
                     "Phase": market_phase,
+                    "Rect Status": rect_status_text,
                     "Score": score,
                     "Market Bonus": market_bonus,
                     "Sektor Bonus": commodity_bonus,
@@ -673,7 +681,7 @@ if st.button("Mulai Screening"):
                 })
 
             except Exception as e:
-                pass # Silently skip errors on individual stocks to keep loop clean
+                pass 
 
         df = pd.DataFrame(hasil)
         market_df_final = pd.DataFrame(market_results)
@@ -681,7 +689,7 @@ if st.button("Mulai Screening"):
 
         if not df.empty:
             kolom_urut = [
-                "Saham", "Sektor", "Phase", "Score", "Market Bonus", "Sektor Bonus", "Final Score", "Market Regime", "Quality",
+                "Saham", "Sektor", "Phase", "Rect Status", "Score", "Market Bonus", "Sektor Bonus", "Final Score", "Market Regime", "Quality",
                 "Strategi", "Antre Beli", "Cut Loss", "Close", "S.STATE", "M.STATE", "L.STATE",
                 "MA_Rejection_Status", "Spread %", "Spread", "RSI", "RSI Status", "ATR %", "ATR Status",
                 "RS", "RS Status", "Volume Ratio", "Volume", "MACD", "STOCH RSI", "Weekly", "Liquidity(B)"
