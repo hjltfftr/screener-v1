@@ -45,8 +45,15 @@ def get_state(close, maA, maB, maC, maD, maE, maF):
     ma_min = min(ma_list)
     spread = round((ma_max - ma_min) / close, 4)
 
-    bull = (maA > maB and maB > maC and maC > maD and maD > maE and maE > maF)
-    bear = (maA < maB and maB < maC and maC < maD and maD < maE and maE < maF)
+    # >= dipakai (bukan >) supaya tetap valid saat parameter di-duplikasi.
+    # S_state & M_state sengaja memanggil get_state() dengan MA yang sama lebih
+    # dari sekali (mis. get_state(..., ma20, ma20, ma20)) untuk meniru "short MA
+    # window". Dengan `>` ketat, maD>maE selalu False saat maD==maE, sehingga
+    # bull/bear tidak akan pernah True dan RAPAT UP/DOWN mustahil tercapai.
+    # `maA > maF` (strict) tetap dipertahankan supaya kondisi flat total (semua
+    # MA identik) tidak ikut dihitung sebagai bull/bear.
+    bull = (maA >= maB and maB >= maC and maC >= maD and maD >= maE and maE >= maF and maA > maF)
+    bear = (maA <= maB and maB <= maC and maC <= maD and maD <= maE and maE <= maF and maA < maF)
 
     if spread < 0.03 and close > maD:
         return "MELILIT UP"
@@ -56,8 +63,10 @@ def get_state(close, maA, maB, maC, maD, maE, maF):
         return "RAPAT UP"
     elif bear and spread <= 0.05:
         return "RAPAT DOWN"
-    elif spread <= 0.07:
-        return "RENGGANG"
+    elif spread <= 0.07 and close > maD:
+        return "RENGGANG UP"
+    elif spread <= 0.07 and close <= maD:
+        return "RENGGANG DOWN"
     else:
         return "JAUH"
 
@@ -639,7 +648,9 @@ if st.button("Mulai Screening"):
                     market_phase = "WEAK"
 
                 score = 0
-                ma_state_score = {"MELILIT UP": 4, "RAPAT UP": 3, "RENGGANG": 1, "JAUH": 0, "MELILIT DOWN": -3, "RAPAT DOWN": -5}
+                # NOTE: nilai RENGGANG DOWN masih perkiraan (belum divalidasi lewat
+                # notebook backtest H+1/H+2/H+3 kamu) - sesuaikan begitu ada hasilnya.
+                ma_state_score = {"MELILIT UP": 4, "RAPAT UP": 3, "RENGGANG UP": 1, "JAUH": 0, "MELILIT DOWN": -3, "RAPAT DOWN": -5, "RENGGANG DOWN": -1}
                 score += (ma_state_score.get(S_state, 0) + ma_state_score.get(M_state, 0) + ma_state_score.get(L_state, 0))
                 score += rejection_score
 
