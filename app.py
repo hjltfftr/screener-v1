@@ -887,13 +887,31 @@ if st.button("Mulai Screening"):
 
             st.success("✅ Screening Canggih Selesai!")
 
-            breakout_options = [t for t in df["Breakout Type"].unique().tolist() if t != "-"]
-            selected_breakout = st.multiselect(
-                "🔎 Filter berdasarkan Breakout Type",
-                options=breakout_options,
-                default=[]
-            )
-            df_display = df[df["Breakout Type"].isin(selected_breakout)] if selected_breakout else df
+            # Menambahkan filter dengan kolom berdampingan
+            col_filter1, col_filter2 = st.columns(2)
+            
+            with col_filter1:
+                breakout_options = [t for t in df["Breakout Type"].unique().tolist() if t != "-"]
+                selected_breakout = st.multiselect(
+                    "🔎 Filter Breakout Type",
+                    options=breakout_options,
+                    default=[]
+                )
+                
+            with col_filter2:
+                ut_options = df["UT Bot"].unique().tolist()
+                selected_ut = st.multiselect(
+                    "🤖 Filter UT Bot Status",
+                    options=ut_options,
+                    default=[]
+                )
+
+            # Menerapkan filter
+            df_display = df.copy()
+            if selected_breakout:
+                df_display = df_display[df_display["Breakout Type"].isin(selected_breakout)]
+            if selected_ut:
+                df_display = df_display[df_display["UT Bot"].isin(selected_ut)]
 
             def color_ut_bot(val):
                 color = 'white'
@@ -903,7 +921,7 @@ if st.button("Mulai Screening"):
                 elif val == 'Sell': color = 'red'
                 return f'color: {color}; font-weight: bold;'
 
-            st.dataframe(df_display.head(15).style.map(color_ut_bot, subset=['UT Bot']))
+            st.dataframe(df_display.head(20).style.map(color_ut_bot, subset=['UT Bot']))
 
             st.download_button(
                 label="📥 Download Excel Hasil Screening",
