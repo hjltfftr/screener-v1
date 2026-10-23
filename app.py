@@ -45,13 +45,6 @@ def get_state(close, maA, maB, maC, maD, maE, maF):
     ma_min = min(ma_list)
     spread = round((ma_max - ma_min) / close, 4)
 
-    # >= dipakai (bukan >) supaya tetap valid saat parameter di-duplikasi.
-    # S_state & M_state sengaja memanggil get_state() dengan MA yang sama lebih
-    # dari sekali (mis. get_state(..., ma20, ma20, ma20)) untuk meniru "short MA
-    # window". Dengan `>` ketat, maD>maE selalu False saat maD==maE, sehingga
-    # bull/bear tidak akan pernah True dan RAPAT UP/DOWN mustahil tercapai.
-    # `maA > maF` (strict) tetap dipertahankan supaya kondisi flat total (semua
-    # MA identik) tidak ikut dihitung sebagai bull/bear.
     bull = (maA >= maB and maB >= maC and maC >= maD and maD >= maE and maE >= maF and maA > maF)
     bear = (maA <= maB and maB <= maC and maC <= maD and maD <= maE and maE <= maF and maA < maF)
 
@@ -84,6 +77,69 @@ def calculate_atr(df, period=14):
 
 
 # =========================================
+# FUNCTION UT BOT ALERTS
+# =========================================
+def calculate_ut_bot(df, a=1, c=10):
+    df_ut = pd.DataFrame(index=df.index)
+    df_ut['High'] = df['High']
+    df_ut['Low'] = df['Low']
+    df_ut['Close'] = df['Close']
+    
+    df_ut['tr0'] = abs(df_ut['High'] - df_ut['Low'])
+    df_ut['tr1'] = abs(df_ut['High'] - df_ut['Close'].shift(1))
+    df_ut['tr2'] = abs(df_ut['Low'] - df_ut['Close'].shift(1))
+    df_ut['tr'] = df_ut[['tr0', 'tr1', 'tr2']].max(axis=1)
+
+    df_ut['atr_ut'] = df_ut['tr'].ewm(alpha=1/c, min_periods=c, adjust=False).mean()
+    df_ut['nLoss'] = a * df_ut['atr_ut']
+
+    xATRTrailingStop = np.zeros(len(df_ut))
+    pos = np.zeros(len(df_ut))
+    
+    src = df_ut['Close'].values
+    nLoss = df_ut['nLoss'].values
+
+    for i in range(1, len(df_ut)):
+        if np.isnan(nLoss[i]):
+            continue
+        prev_stop = xATRTrailingStop[i-1]
+        curr_src = src[i]
+        prev_src = src[i-1]
+        curr_loss = nLoss[i]
+
+        if curr_src > prev_stop and prev_src > prev_stop:
+            xATRTrailingStop[i] = max(prev_stop, curr_src - curr_loss)
+        elif curr_src < prev_stop and prev_src < prev_stop:
+            xATRTrailingStop[i] = min(prev_stop, curr_src + curr_loss)
+        elif curr_src > prev_stop:
+            xATRTrailingStop[i] = curr_src - curr_loss
+        else:
+            xATRTrailingStop[i] = curr_src + curr_loss
+
+        if prev_src < prev_stop and curr_src > prev_stop:
+            pos[i] = 1
+        elif prev_src > prev_stop and curr_src < prev_stop:
+            pos[i] = -1
+        else:
+            pos[i] = pos[i-1]
+
+    df_ut['pos'] = pos
+    df_ut['UT_State'] = 'Neutral'
+    
+    buy_signal = (df_ut['pos'] == 1) & (df_ut['pos'].shift(1) != 1)
+    buy_hold = (df_ut['pos'] == 1) & (df_ut['pos'].shift(1) == 1)
+    sell_signal = (df_ut['pos'] == -1) & (df_ut['pos'].shift(1) != -1)
+    sell_hold = (df_ut['pos'] == -1) & (df_ut['pos'].shift(1) == -1)
+    
+    df_ut.loc[buy_signal, 'UT_State'] = 'Early Buy'
+    df_ut.loc[buy_hold, 'UT_State'] = 'Buy'
+    df_ut.loc[sell_signal, 'UT_State'] = 'Early Sell'
+    df_ut.loc[sell_hold, 'UT_State'] = 'Sell'
+
+    return df_ut['UT_State']
+
+
+# =========================================
 # FUNCTION REJECTION
 # =========================================
 def count_rejections(recent_df, ma_col, tolerance):
@@ -108,27 +164,13 @@ def count_rejections(recent_df, ma_col, tolerance):
         if rejection:
             rejection_count += 1
 
-    return rejection_count
+        return rejection_count
 
 
 # =========================================
 # FUNCTION BREAKOUT TYPE CLASSIFICATION
-# (Peter Brandt "Last Full Day Low" framework, via Tech Charts / Aksel Kibar)
 # =========================================
 def classify_breakout_type(data, lookback_base=40, confirm_days=20, vol_ratio_min=1.3):
-    """
-    Klasifikasi kualitas breakout menjadi:
-      TYPE 1 - MOMENTUM        : tidak pernah retest boundary setelah breakout
-      TYPE 2 - RETEST NORMAL   : retest boundary tapi LFD Low tetap utuh
-      TYPE 3 - RETEST DALAM    : LFD Low tertembus, tapi masih di atas support/negation
-      TYPE 4 - FAILED          : support/negation level tertembus, pola batal
-      FRESH (Hari-0)           : breakout baru terjadi di candle terakhir
-      "-"                      : tidak ada breakout dalam window deteksi
-
-    Resistance & Support didekati dengan rolling box (highest high / lowest low)
-    sepanjang `lookback_base` hari sebelum tiap candle. LFD Low = low candle
-    terakhir sebelum hari breakout.
-    """
     if len(data) < lookback_base + confirm_days + 5:
         return {"type": "N/A", "resistance": np.nan, "support": np.nan,
                 "lfd_low": np.nan, "days_since": np.nan}
@@ -196,21 +238,28 @@ def classify_breakout_type(data, lookback_base=40, confirm_days=20, vol_ratio_mi
 # STREAMLIT UI
 # =========================================
 st.set_page_config(page_title="Hybrid Screening & Market Layer", layout="wide")
-st.title("📈 Hybrid Screening + Market Layer")
+st.title("📈 Hybrid Screening + Market Layer + UT Bot")
 
-st.info("💡 Aplikasi ini menarik data saham dari TradingView dan mengkalkulasi rotasi sektor global (Intermarket Analysis).")
+st.info("💡 Aplikasi ini menarik data saham dari TradingView dan mengkalkulasi rotasi sektor global (Intermarket Analysis) serta memantau sinyal UT Bot Alerts.")
 
-with st.expander("ℹ️ Tentang Breakout Type 1/2/3/4 (Peter Brandt LFD Low Framework)"):
+with st.expander("ℹ️ Tentang Breakout Type & UT Bot"):
     st.markdown("""
+    **Breakout Type (Peter Brandt LFD Low Framework):**
     - **TYPE 1 - MOMENTUM**: harga tidak pernah balik menguji level resistance setelah breakout. Breakout paling kuat.
     - **TYPE 2 - RETEST NORMAL**: harga balik menguji resistance lama (boleh sedikit tembus intraday), tapi *Last Full Day Low* (low candle terakhir sebelum breakout) tetap utuh.
     - **TYPE 3 - RETEST DALAM**: *Last Full Day Low* tertembus, tapi harga masih bertahan di atas support/negation level (dasar konsolidasi). Sering mengguncang trader stop ketat sebelum lanjut naik.
     - **TYPE 4 - FAILED**: support/negation level tertembus — pola breakout batal.
     - **FRESH (Hari-0)**: breakout baru terjadi di candle terakhir, belum ada data untuk klasifikasi lanjut.
+    
+    **UT Bot Alerts Status:**
+    - **Early Buy**: Baru saja menembus ke atas Trailing Stop (Sinyal beli baru).
+    - **Buy**: Berada dalam fase Uptrend yang sedang berjalan.
+    - **Early Sell**: Baru saja menembus ke bawah Trailing Stop (Sinyal jual baru).
+    - **Sell**: Berada dalam fase Downtrend yang sedang berjalan.
     """)
 
 # =========================================
-# INPUT MODE TANGGAL
+# INPUT MODE TANGGAL & UT BOT PARAMETERS
 # =========================================
 pakai_hari_ini = st.radio("Pakai tanggal hari ini?", ("Ya", "Tidak"))
 
@@ -221,6 +270,13 @@ else:
     tanggal_input = pd.to_datetime(tanggal_manual)
 
 st.write(f"**Screening menggunakan data sampai:** {tanggal_input.date()}")
+
+st.markdown("### ⚙️ Parameter UT Bot Alerts")
+col1, col2 = st.columns(2)
+with col1:
+    ut_a = st.number_input("Key Value (Sensitivity)", min_value=0.1, value=1.0, step=0.1)
+with col2:
+    ut_c = st.number_input("ATR Period", min_value=1, value=10, step=1)
 
 # =========================================
 # MAIN EXECUTION
@@ -361,8 +417,6 @@ if st.button("Mulai Screening"):
         }
 
         commodity_results = []
-
-        # Wadah bonus untuk di-mapping ke saham nanti
         commodity_bonus_pool = {
             "Energy": 0, "Basic": 0, "Industrial": 0, "Financial": 0,
             "Health": 0, "Non-Cyclical": 0, "Technology": 0,
@@ -388,7 +442,6 @@ if st.button("Mulai Screening"):
                 if change_pct > 0.3: status = "BULLISH"
                 elif change_pct < -0.3: status = "BEARISH"
 
-                # Logika Injeksi Poin
                 if status == "BULLISH":
                     if nama == "Oil": commodity_bonus_pool["Energy"] += 3
                     elif nama in ["Gold", "Silver", "Copper"]: commodity_bonus_pool["Basic"] += 2
@@ -501,6 +554,12 @@ if st.button("Mulai Screening"):
 
                 data["ATR"] = calculate_atr(data)
                 data["ATR_PERCENT"] = (data["ATR"] / data["Close"]) * 100
+
+                # =========================================
+                # APPLY UT BOT LOGIC HERE
+                # =========================================
+                data["UT_State"] = calculate_ut_bot(data, a=ut_a, c=ut_c)
+                ut_state_now = data["UT_State"].iloc[-1]
 
                 breakout_info = classify_breakout_type(data)
 
@@ -648,8 +707,6 @@ if st.button("Mulai Screening"):
                     market_phase = "WEAK"
 
                 score = 0
-                # NOTE: nilai RENGGANG DOWN masih perkiraan (belum divalidasi lewat
-                # notebook backtest H+1/H+2/H+3 kamu) - sesuaikan begitu ada hasilnya.
                 ma_state_score = {"MELILIT UP": 4, "RAPAT UP": 3, "RENGGANG UP": 1, "JAUH": 0, "MELILIT DOWN": -3, "RAPAT DOWN": -5, "RENGGANG DOWN": -1}
                 score += (ma_state_score.get(S_state, 0) + ma_state_score.get(M_state, 0) + ma_state_score.get(L_state, 0))
                 score += rejection_score
@@ -720,12 +777,10 @@ if st.button("Mulai Screening"):
                     elif market_phase == "1. MBULET": market_bonus = -2
                     elif market_phase == "WEAK": market_bonus = -5
 
-                # PENCARIAN SEKTOR DAN APLIKASI BONUS INTERMARKET
                 sektor_saham = sektor_dict.get(kode, "-")
                 sec_up = str(sektor_saham).upper()
                 commodity_bonus = 0
 
-                # Pemetaan cerdas ke string sektor (aman dari variasi teks TradingView)
                 if "ENERGY" in sec_up: commodity_bonus += commodity_bonus_pool["Energy"]
                 elif "BASIC" in sec_up: commodity_bonus += commodity_bonus_pool["Basic"]
                 elif "INDUSTRIAL" in sec_up: commodity_bonus += commodity_bonus_pool["Industrial"]
@@ -738,7 +793,6 @@ if st.button("Mulai Screening"):
                 elif "TELECOM" in sec_up or "INFRA" in sec_up: commodity_bonus += commodity_bonus_pool["Telecom"]
                 elif "TRANSPORT" in sec_up or "LOGISTIC" in sec_up: commodity_bonus += commodity_bonus_pool["Transport"]
 
-                # BONUS BREAKOUT TYPE (Peter Brandt LFD Low framework)
                 breakout_bonus_map = {
                     "TYPE 1 - MOMENTUM": 8,
                     "TYPE 2 - RETEST NORMAL": 6,
@@ -760,6 +814,7 @@ if st.button("Mulai Screening"):
                     "Saham": kode.replace(".JK", ""),
                     "Sektor": sektor_saham,
                     "Phase": market_phase,
+                    "UT Bot": ut_state_now,
                     "Score": score,
                     "Market Bonus": market_bonus,
                     "Sektor Bonus": commodity_bonus,
@@ -797,7 +852,7 @@ if st.button("Mulai Screening"):
                 })
 
             except Exception as e:
-                pass  # Silently skip errors on individual stocks to keep loop clean
+                pass
 
         df = pd.DataFrame(hasil)
         market_df_final = pd.DataFrame(market_results)
@@ -805,7 +860,7 @@ if st.button("Mulai Screening"):
 
         if not df.empty:
             kolom_urut = [
-                "Saham", "Sektor", "Phase", "Score", "Market Bonus", "Sektor Bonus", "Breakout Bonus", "Final Score", "Market Regime", "Quality",
+                "Saham", "Sektor", "Phase", "UT Bot", "Score", "Market Bonus", "Sektor Bonus", "Breakout Bonus", "Final Score", "Market Regime", "Quality",
                 "Strategi", "Antre Beli", "Cut Loss", "Close", "S.STATE", "M.STATE", "L.STATE",
                 "MA_Rejection_Status", "Spread %", "Spread", "RSI", "RSI Status", "ATR %", "ATR Status",
                 "RS", "RS Status", "Volume Ratio", "Volume", "MACD", "STOCH RSI", "Weekly",
@@ -840,7 +895,15 @@ if st.button("Mulai Screening"):
             )
             df_display = df[df["Breakout Type"].isin(selected_breakout)] if selected_breakout else df
 
-            st.dataframe(df_display.head(15))
+            def color_ut_bot(val):
+                color = 'white'
+                if val == 'Early Buy': color = 'lime'
+                elif val == 'Buy': color = 'green'
+                elif val == 'Early Sell': color = 'orange'
+                elif val == 'Sell': color = 'red'
+                return f'color: {color}; font-weight: bold;'
+
+            st.dataframe(df_display.head(15).style.map(color_ut_bot, subset=['UT Bot']))
 
             st.download_button(
                 label="📥 Download Excel Hasil Screening",
